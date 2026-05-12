@@ -5,6 +5,9 @@ import torchvision.transforms as transforms
 from torchvision import models
 from PIL import Image
 import io
+from pathlib import Path
+
+MODEL_PATH = Path(__file__).parent.parent / "model" / "checkpoints" / "waste_ai.pt"
 
 app = FastAPI(title="Waste AI API", version="1.0.0")
 
@@ -62,7 +65,7 @@ def load_model():
     m = models.mobilenet_v3_small(weights=None)
     m.classifier[3] = torch.nn.Linear(m.classifier[3].in_features, len(CATEGORIES))
     try:
-        m.load_state_dict(torch.load("../model/checkpoints/waste_ai.pt", map_location="cpu"))
+        m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
         m.eval()
         model = m
         print("Modele charge depuis checkpoints/waste_ai.pt")
