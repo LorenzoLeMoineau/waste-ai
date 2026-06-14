@@ -7,7 +7,13 @@ from PIL import Image
 import io
 from pathlib import Path
 
-MODEL_PATH = Path(__file__).parent.parent / "model" / "checkpoints" / "waste_ai.pt"
+CHECKPOINTS = Path(__file__).parent.parent / "model" / "checkpoints"
+# Utilise v2 si disponible, sinon v1
+MODEL_PATH = (
+    CHECKPOINTS / "waste_ai_v2.pt"
+    if (CHECKPOINTS / "waste_ai_v2.pt").exists()
+    else CHECKPOINTS / "waste_ai.pt"
+)
 
 app = FastAPI(title="Waste AI API", version="1.0.0")
 
