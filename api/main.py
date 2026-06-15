@@ -2,18 +2,30 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import torch
 import torchvision.transforms as transforms
-from torchvision import models
 from PIL import Image
 import io
 from pathlib import Path
 
+try:
+    import timm
+    TIMM_AVAILABLE = True
+except ImportError:
+    TIMM_AVAILABLE = False
+
+from torchvision import models
+
 CHECKPOINTS = Path(__file__).parent.parent / "model" / "checkpoints"
-# Utilise v2 si disponible, sinon v1
-MODEL_PATH = (
-    CHECKPOINTS / "waste_ai_v2.pt"
-    if (CHECKPOINTS / "waste_ai_v2.pt").exists()
-    else CHECKPOINTS / "waste_ai.pt"
-)
+
+# Priorité : v3 (EfficientNet) > v2 (MobileNetV3 amélioré) > v1 (baseline)
+if (CHECKPOINTS / "waste_ai_v3.pt").exists():
+    MODEL_PATH = CHECKPOINTS / "waste_ai_v3.pt"
+    MODEL_TYPE = "efficientnet_b2"
+elif (CHECKPOINTS / "waste_ai_v2.pt").exists():
+    MODEL_PATH = CHECKPOINTS / "waste_ai_v2.pt"
+    MODEL_TYPE = "mobilenet_v3"
+else:
+    MODEL_PATH = CHECKPOINTS / "waste_ai.pt"
+    MODEL_TYPE = "mobilenet_v3"
 
 app = FastAPI(title="Waste AI API", version="1.0.0")
 
@@ -57,8 +69,11 @@ CATEGORIES = {
     },
 }
 
+# EfficientNet-B2 utilise des images 260x260
+IMG_SIZE = 260 if MODEL_TYPE == "efficientnet_b2" else 224
+
 TRANSFORM = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -68,15 +83,22 @@ model = None
 
 def load_model():
     global model
-    m = models.mobilenet_v3_small(weights=None)
-    m.classifier[3] = torch.nn.Linear(m.classifier[3].in_features, len(CATEGORIES))
     try:
+        if MODEL_TYPE == "efficientnet_b2" and TIMM_AVAILABLE:
+            import timm
+            m = timm.create_model("efficientnet_b2", pretrained=False, num_classes=len(CATEGORIES))
+        else:
+            m = models.mobilenet_v3_small(weights=None)
+            m.classifier[3] = torch.nn.Linear(m.classifier[3].in_features, len(CATEGORIES))
+
         m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
         m.eval()
         model = m
-        print("Modele charge depuis checkpoints/waste_ai.pt")
+        print(f"Modele charge : {MODEL_TYPE} depuis {MODEL_PATH.name}")
     except FileNotFoundError:
-        print("Aucun checkpoint trouve — le modele n'est pas encore entraine.")
+        print("Aucun checkpoint trouve.")
+    except Exception as e:
+        print(f"Erreur chargement modele : {e}")
 
 
 load_model()
@@ -84,13 +106,17 @@ load_model()
 
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Waste AI API operationnelle"}
+    return {
+        "status": "ok",
+        "model": MODEL_TYPE,
+        "checkpoint": MODEL_PATH.name,
+    }
 
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if model is None:
-        raise HTTPException(status_code=503, detail="Modele non disponible. Lancez d'abord l'entrainement.")
+        raise HTTPException(status_code=503, detail="Modele non disponible.")
 
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Fichier invalide. Envoyez une image.")
