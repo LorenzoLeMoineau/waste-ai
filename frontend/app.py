@@ -91,7 +91,11 @@ HORS_PERIMETRE = [
 
 st.set_page_config(page_title="Waste AI", page_icon="♻", layout="centered")
 
-tab1, tab2 = st.tabs(["Analyser un déchet", "Couverture & Limites"])
+# Initialiser l'historique en session
+if "historique" not in st.session_state:
+    st.session_state.historique = []
+
+tab1, tab2, tab3 = st.tabs(["Analyser un déchet", "Historique des scans", "Couverture & Limites"])
 
 # ──────────────────────────────────────────
 # TAB 1 — Analyse
@@ -140,6 +144,14 @@ with tab1:
                 )
                 st.info(result["consigne"])
 
+                # Sauvegarder dans l'historique
+                st.session_state.historique.append({
+                    "heure": datetime.now().strftime("%H:%M:%S"),
+                    "label": result["label"],
+                    "bac": result["bac"],
+                    "confidence": result["confidence"],
+                })
+
                 # Avertissement si confiance faible
                 if result["confidence"] < 60:
                     st.warning(
@@ -165,9 +177,55 @@ with tab1:
                 st.error(f"Erreur : {e}")
 
 # ──────────────────────────────────────────
-# TAB 2 — Couverture & Limites
+# TAB 2 — Historique
 # ──────────────────────────────────────────
 with tab2:
+    st.title("Historique des scans")
+    st.caption("Tous les déchets analysés depuis le début de la session.")
+
+    if not st.session_state.historique:
+        st.info("Aucun scan effectué pour l'instant. Analysez un déchet dans l'onglet principal !")
+    else:
+        # Statistiques résumées
+        total = len(st.session_state.historique)
+        conf_moy = sum(s["confidence"] for s in st.session_state.historique) / total
+        labels = [s["label"] for s in st.session_state.historique]
+        plus_frequent = max(set(labels), key=labels.count)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Scans effectués", total)
+        col2.metric("Confiance moyenne", f"{conf_moy:.1f}%")
+        col3.metric("Déchet le plus scanné", plus_frequent)
+
+        st.divider()
+
+        # Tableau de l'historique
+        for i, scan in enumerate(reversed(st.session_state.historique)):
+            color = BAC_COLORS.get(scan["bac"], "#1976d2")
+            conf = scan["confidence"]
+            conf_color = "#2ecc71" if conf >= 80 else "#f39c12" if conf >= 60 else "#e74c3c"
+
+            st.markdown(
+                f"<div style='border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;"
+                f"display:flex;justify-content:space-between;align-items:center'>"
+                f"<span style='color:#aaa;font-size:13px'>{scan['heure']}</span>"
+                f"<span style='font-weight:bold;font-size:16px'>{scan['label']}</span>"
+                f"<span style='background:{color};color:white;padding:4px 10px;"
+                f"border-radius:12px;font-size:13px'>{scan['bac']}</span>"
+                f"<span style='color:{conf_color};font-weight:bold'>{conf}%</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+        if st.button("Effacer l'historique", type="secondary"):
+            st.session_state.historique = []
+            st.rerun()
+
+# ──────────────────────────────────────────
+# TAB 3 — Couverture & Limites
+# ──────────────────────────────────────────
+with tab3:
     st.title("Couverture & Limites du modèle")
     st.caption("Ce que Waste AI sait reconnaître — et ce qu'il ne gère pas encore.")
 
