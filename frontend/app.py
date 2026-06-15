@@ -1,8 +1,25 @@
 import streamlit as st
 import requests
 from PIL import Image
+import csv
+import os
+from datetime import datetime
 
 API_URL = "http://localhost:8000/predict"
+FEEDBACK_FILE = "feedback.csv"
+
+def save_feedback(predicted_label, confidence, correct_label):
+    file_exists = os.path.exists(FEEDBACK_FILE)
+    with open(FEEDBACK_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "predicted", "confidence", "correct_label"])
+        writer.writerow([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            predicted_label,
+            confidence,
+            correct_label,
+        ])
 
 BAC_COLORS = {
     "Bac jaune": "#f5c518",
@@ -129,6 +146,18 @@ with tab1:
                         "Confiance faible — l'objet est peut-être hors du périmètre du modèle "
                         "ou mal cadré. Consultez l'onglet **Couverture & Limites**."
                     )
+
+                st.divider()
+                st.markdown("**Ce résultat est incorrect ?**")
+                with st.expander("Signaler une erreur"):
+                    correct = st.selectbox(
+                        "Quelle est la bonne catégorie ?",
+                        ["Carton", "Verre", "Métal", "Papier", "Plastique", "Résidus", "Autre / Hors périmètre"],
+                        key="correct_label",
+                    )
+                    if st.button("Envoyer le feedback", type="primary"):
+                        save_feedback(result["label"], result["confidence"], correct)
+                        st.success("Merci ! Votre correction a été enregistrée et servira à améliorer le modèle.")
 
             except requests.exceptions.ConnectionError:
                 st.error("Impossible de contacter l'API. Vérifiez que le backend est lancé.")
