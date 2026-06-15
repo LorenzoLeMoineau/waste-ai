@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 from PIL import Image
-import io
 
 API_URL = "http://localhost:8000/predict"
 
@@ -12,54 +11,203 @@ BAC_COLORS = {
     "Bac marron (compost)": "#6d4c41",
 }
 
+CATEGORIES = [
+    {
+        "label": "Plastique",
+        "bac": "Bac jaune",
+        "color": "#f5c518",
+        "exemples": "Bouteilles, flacons, barquettes, films plastique",
+        "consigne": "Videz et rincez avant de déposer dans le bac jaune.",
+        "emoji": "🧴",
+    },
+    {
+        "label": "Carton",
+        "bac": "Bac jaune",
+        "color": "#f5c518",
+        "exemples": "Boîtes, colis, emballages cartonnés",
+        "consigne": "Aplatissez les cartons avant de les déposer.",
+        "emoji": "📦",
+    },
+    {
+        "label": "Papier",
+        "bac": "Bac jaune",
+        "color": "#f5c518",
+        "exemples": "Journaux, magazines, feuilles, enveloppes",
+        "consigne": "Pas de papier gras ni de mouchoirs usagés.",
+        "emoji": "📄",
+    },
+    {
+        "label": "Métal",
+        "bac": "Bac jaune",
+        "color": "#f5c518",
+        "exemples": "Canettes, boîtes de conserve, capsules, aluminium",
+        "consigne": "Écrasez les canettes pour gagner de la place.",
+        "emoji": "🥫",
+    },
+    {
+        "label": "Verre",
+        "bac": "Colonne à verre",
+        "color": "#2e7d32",
+        "exemples": "Bouteilles en verre, bocaux, pots",
+        "consigne": "Retirez les couvercles. Ne mettez pas les vitres ni la vaisselle.",
+        "emoji": "🍾",
+    },
+    {
+        "label": "Résidus",
+        "bac": "Bac gris",
+        "color": "#616161",
+        "exemples": "Tout ce qui ne rentre pas dans les autres catégories",
+        "consigne": "Déposez dans le bac gris. Ces déchets ne sont pas recyclables.",
+        "emoji": "🗑️",
+    },
+]
+
+HORS_PERIMETRE = [
+    {"label": "Piles & batteries", "emoji": "🔋", "ou": "Bac à piles en magasin"},
+    {"label": "Médicaments", "emoji": "💊", "ou": "Pharmacie"},
+    {"label": "Textile & vêtements", "emoji": "👕", "ou": "Borne textile"},
+    {"label": "Appareils électroniques", "emoji": "📱", "ou": "Déchetterie / DEEE"},
+    {"label": "Huiles usagées", "emoji": "🛢️", "ou": "Déchetterie"},
+    {"label": "Peintures & solvants", "emoji": "🎨", "ou": "Déchetterie"},
+    {"label": "Ampoules", "emoji": "💡", "ou": "Point de collecte en magasin"},
+]
+
 st.set_page_config(page_title="Waste AI", page_icon="♻", layout="centered")
 
-st.title("Waste AI")
-st.caption("Prenez en photo un déchet — l'IA vous dit où le jeter.")
+tab1, tab2 = st.tabs(["Analyser un déchet", "Couverture & Limites"])
 
-source = st.radio("Source de l'image", ["Caméra", "Upload"], horizontal=True)
+# ──────────────────────────────────────────
+# TAB 1 — Analyse
+# ──────────────────────────────────────────
+with tab1:
+    st.title("Waste AI")
+    st.caption("Prenez en photo un déchet — l'IA vous dit où le jeter.")
 
-image_data = None
+    source = st.radio("Source de l'image", ["Caméra", "Upload"], horizontal=True)
 
-if source == "Caméra":
-    image_data = st.camera_input("Pointez votre caméra vers le déchet")
-else:
-    image_data = st.file_uploader("Chargez une image", type=["jpg", "jpeg", "png", "webp"])
+    image_data = None
+    if source == "Caméra":
+        image_data = st.camera_input("Pointez votre caméra vers le déchet")
+    else:
+        image_data = st.file_uploader("Chargez une image", type=["jpg", "jpeg", "png", "webp"])
 
-if image_data is not None:
-    image = Image.open(image_data)
-    st.image(image, caption="Image analysée", use_container_width=True)
+    if image_data is not None:
+        image = Image.open(image_data)
+        st.image(image, caption="Image analysée", use_container_width=True)
 
-    with st.spinner("Analyse en cours..."):
-        image_data.seek(0)
-        try:
-            response = requests.post(
-                API_URL,
-                files={"file": ("image.jpg", image_data, "image/jpeg")},
-                timeout=10,
-            )
-            response.raise_for_status()
-            result = response.json()
+        with st.spinner("Analyse en cours..."):
+            image_data.seek(0)
+            try:
+                response = requests.post(
+                    API_URL,
+                    files={"file": ("image.jpg", image_data, "image/jpeg")},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                result = response.json()
 
-            st.divider()
+                st.divider()
 
-            col1, col2 = st.columns(2)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Déchet détecté", result["label"])
+                with col2:
+                    st.metric("Confiance", f"{result['confidence']}%")
+
+                bac = result["bac"]
+                color = BAC_COLORS.get(bac, "#1976d2")
+                st.markdown(
+                    f"<div style='background:{color};color:white;padding:16px;border-radius:8px;"
+                    f"font-size:18px;font-weight:bold;text-align:center'>{bac}</div>",
+                    unsafe_allow_html=True,
+                )
+                st.info(result["consigne"])
+
+                # Avertissement si confiance faible
+                if result["confidence"] < 60:
+                    st.warning(
+                        "Confiance faible — l'objet est peut-être hors du périmètre du modèle "
+                        "ou mal cadré. Consultez l'onglet **Couverture & Limites**."
+                    )
+
+            except requests.exceptions.ConnectionError:
+                st.error("Impossible de contacter l'API. Vérifiez que le backend est lancé.")
+            except Exception as e:
+                st.error(f"Erreur : {e}")
+
+# ──────────────────────────────────────────
+# TAB 2 — Couverture & Limites
+# ──────────────────────────────────────────
+with tab2:
+    st.title("Couverture & Limites du modèle")
+    st.caption("Ce que Waste AI sait reconnaître — et ce qu'il ne gère pas encore.")
+
+    # Catégories couvertes
+    st.subheader("Catégories couvertes (6)")
+    st.info(
+        "Le modèle a été entraîné sur **TrashNet** et **TACO**, deux datasets académiques "
+        "de référence. Il reconnaît les 6 catégories ci-dessous, alignées sur les consignes ADEME / Citeo."
+    )
+
+    for cat in CATEGORIES:
+        with st.expander(f"{cat['emoji']}  {cat['label']} — {cat['bac']}"):
+            col1, col2 = st.columns([1, 3])
             with col1:
-                st.metric("Déchet détecté", result["label"])
+                st.markdown(
+                    f"<div style='background:{cat['color']};color:white;padding:12px;"
+                    f"border-radius:8px;text-align:center;font-weight:bold'>{cat['bac']}</div>",
+                    unsafe_allow_html=True,
+                )
             with col2:
-                st.metric("Confiance", f"{result['confidence']}%")
+                st.markdown(f"**Exemples :** {cat['exemples']}")
+                st.markdown(f"**Consigne :** {cat['consigne']}")
 
-            bac = result["bac"]
-            color = BAC_COLORS.get(bac, "#1976d2")
+    st.divider()
+
+    # Hors périmètre
+    st.subheader("Hors périmètre — non pris en charge")
+    st.warning(
+        "Ces catégories ne sont **pas reconnues** par le modèle actuel. "
+        "Si vous photographiez l'un de ces objets, le résultat sera incorrect."
+    )
+
+    cols = st.columns(2)
+    for i, item in enumerate(HORS_PERIMETRE):
+        with cols[i % 2]:
             st.markdown(
-                f"<div style='background:{color};color:white;padding:16px;border-radius:8px;"
-                f"font-size:18px;font-weight:bold;text-align:center'>{bac}</div>",
+                f"<div style='border:1px solid #444;border-radius:8px;padding:12px;margin-bottom:8px'>"
+                f"<b>{item['emoji']} {item['label']}</b><br>"
+                f"<span style='color:#aaa;font-size:13px'>→ {item['ou']}</span></div>",
                 unsafe_allow_html=True,
             )
 
-            st.info(result["consigne"])
+    st.divider()
 
-        except requests.exceptions.ConnectionError:
-            st.error("Impossible de contacter l'API. Vérifiez que le backend est lancé (`uvicorn main:app --reload`).")
-        except Exception as e:
-            st.error(f"Erreur : {e}")
+    # Limites connues
+    st.subheader("Limites connues du modèle")
+
+    st.markdown("""
+    | Situation | Impact | Recommandation |
+    |-----------|--------|----------------|
+    | Objet sur fond complexe | Précision réduite | Photographier sur fond neutre |
+    | Plusieurs déchets dans l'image | Classification incorrecte | Un seul objet par photo |
+    | Mauvaise luminosité | Précision réduite | Bonne lumière naturelle |
+    | Objet abîmé ou écrasé | Peut être mal classé | Cadrer la partie la plus reconnaissable |
+    | Score de confiance < 60% | Résultat peu fiable | Vérifier manuellement |
+    """)
+
+    st.divider()
+
+    # Données d'entraînement
+    st.subheader("Données d'entraînement")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Dataset principal", "TrashNet")
+        st.caption("~2 500 images sur fond blanc, 6 classes")
+        st.metric("Dataset complémentaire", "TACO")
+        st.caption("Photos en contexte réel, annotations manuelles")
+    with col2:
+        st.metric("Architecture", "MobileNetV3 Small")
+        st.caption("Transfer learning — ImageNet → déchets")
+        st.metric("Référentiel", "ADEME / Citeo")
+        st.caption("Consignes de tri officielles France")
