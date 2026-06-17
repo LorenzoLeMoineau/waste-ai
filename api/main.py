@@ -16,8 +16,11 @@ from torchvision import models
 
 CHECKPOINTS = Path(__file__).parent.parent / "model" / "checkpoints"
 
-# Priorité : v3 (EfficientNet) > v2 (MobileNetV3 amélioré) > v1 (baseline)
-if (CHECKPOINTS / "waste_ai_v3.pt").exists():
+# Priorité : v4 > v3 (EfficientNet) > v2 (MobileNetV3 amélioré) > v1 (baseline)
+if (CHECKPOINTS / "waste_ai_v4.pt").exists():
+    MODEL_PATH = CHECKPOINTS / "waste_ai_v4.pt"
+    MODEL_TYPE = "efficientnet_b2"
+elif (CHECKPOINTS / "waste_ai_v3.pt").exists():
     MODEL_PATH = CHECKPOINTS / "waste_ai_v3.pt"
     MODEL_TYPE = "efficientnet_b2"
 elif (CHECKPOINTS / "waste_ai_v2.pt").exists():
