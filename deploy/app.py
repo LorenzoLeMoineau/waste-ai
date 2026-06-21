@@ -6,7 +6,6 @@ import io
 import math
 import html as html_lib
 import requests
-import csv
 import os
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +39,8 @@ except ImportError:
 
 # ── Sécurité ───────────────────────────────────────────────────────────────────
 Image.MAX_IMAGE_PIXELS = 50_000_000
+
+
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 # ── Modèle ─────────────────────────────────────────────────────────────────────
@@ -334,17 +335,16 @@ def db_clear_scans(user_id: str, token: str):
         pass
 
 
-FEEDBACK_FILE = "feedback.csv"
-
-
 def save_feedback(predicted_label, confidence, correct_label):
-    file_exists = os.path.exists(FEEDBACK_FILE)
-    with open(FEEDBACK_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["timestamp", "predicted", "confidence", "correct_label"])
-        writer.writerow([datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                         predicted_label, confidence, correct_label])
+    if DB_READY:
+        try:
+            _sb_create(_SB_URL, _SB_KEY).table("feedback").insert({
+                "predicted_label": predicted_label,
+                "confidence": confidence,
+                "correct_label": correct_label,
+            }).execute()
+        except Exception:
+            pass
 
 
 BAC_COLORS = {
@@ -422,6 +422,7 @@ st.markdown("""
     background: linear-gradient(160deg, #0d1f14 0%, #1a2e1e 100%);
 }
 [data-testid="stHeader"] { background: transparent; }
+[data-testid="stDecoration"] { display: none !important; }
 
 [data-testid="stTabs"] [role="tab"] {
     color: #95d5b2; font-weight: 600; font-size: 15px;
@@ -475,8 +476,20 @@ p, label, .stMarkdown { color: #b7e4c7 !important; }
 hr { border-color: #2d6a4f !important; }
 [data-testid="stRadio"] label { color: #b7e4c7 !important; }
 iframe { border-radius: 14px !important; overflow: hidden; }
+
+@media (max-width: 768px) {
+    [data-testid="stTabs"] [role="tab"] {
+        font-size: 12px !important;
+        padding: 6px 10px !important;
+    }
+    h1 { font-size: 1.6rem !important; }
+    [data-testid="metric-container"] { padding: 10px !important; }
+    [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
+    .block-container { padding: 1rem 0.75rem !important; }
+}
 </style>
 """, unsafe_allow_html=True)
+
 
 if "historique" not in st.session_state:
     st.session_state.historique = []

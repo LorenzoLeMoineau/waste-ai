@@ -1,0 +1,24 @@
+{
+  "name": "Waste AI",
+  "short_name": "Waste AI",
+  "description": "Photographiez un déchet — l'IA vous dit où le jeter.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1f14",
+  "theme_color": "#0d1f14",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/app/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/app/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
