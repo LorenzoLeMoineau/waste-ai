@@ -1,9 +1,23 @@
 import streamlit as st
 import requests
+import math
 from PIL import Image
 import csv
 import os
 from datetime import datetime
+
+try:
+    import folium
+    from streamlit_folium import st_folium
+    FOLIUM_AVAILABLE = True
+except ImportError:
+    FOLIUM_AVAILABLE = False
+
+try:
+    from streamlit_searchbox import st_searchbox
+    SEARCHBOX_AVAILABLE = True
+except ImportError:
+    SEARCHBOX_AVAILABLE = False
 
 API_URL = "http://localhost:8000/predict"
 FEEDBACK_FILE = "feedback.csv"
@@ -95,9 +109,203 @@ p, label, .stMarkdown { color: #b7e4c7 !important; }
 
 hr { border-color: #2d6a4f !important; }
 [data-testid="stRadio"] label { color: #b7e4c7 !important; }
+
+/* Carte Folium — coins arrondis */
+iframe {
+    border-radius: 14px !important;
+    overflow: hidden;
+}
+
+/* Searchbox adresse — style sombre */
+[data-testid="stCustomComponentV1"] > div {
+    border-radius: 12px;
+}
+div[class*="searchbox"] input,
+div[class*="stSearchbox"] input {
+    background: #1b4332 !important;
+    color: #d8f3dc !important;
+    border: 1px solid #2d6a4f !important;
+    border-radius: 10px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
+
+# ── Helpers géolocalisation ────────────────────────────────────────────────────
+
+def search_fr_address(query: str) -> list:
+    """Autocomplete adresse via API Adresse data.gouv.fr — retourne (label, {lat, lon, label})."""
+    if len(query) < 3:
+        return []
+    try:
+        r = requests.get(
+            "https://api-adresse.data.gouv.fr/search/",
+            params={"q": query, "limit": 6},
+            timeout=5,
+        )
+        r.raise_for_status()
+        results = []
+        for f in r.json().get("features", []):
+            label = f["properties"]["label"]
+            coords = f["geometry"]["coordinates"]
+            results.append((label, {"lat": coords[1], "lon": coords[0], "label": label}))
+        return results
+    except Exception:
+        return []
+
+
+def geocode_address(address):
+    """Fallback geocoding si l'autocomplete n'est pas utilisé."""
+    try:
+        r = requests.get(
+            "https://api-adresse.data.gouv.fr/search/",
+            params={"q": address, "limit": 1},
+            timeout=10,
+        )
+        r.raise_for_status()
+        features = r.json().get("features", [])
+        if not features:
+            return None, None, None
+        coords = features[0]["geometry"]["coordinates"]
+        label = features[0]["properties"]["label"]
+        return coords[1], coords[0], label
+    except Exception:
+        return None, None, None
+
+
+_OVERPASS_ENDPOINTS = [
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+]
+
+
+def search_overpass(lat, lon, config):
+    """Cherche des points de collecte via Overpass API (OpenStreetMap).
+    Retourne (elements, error_message)."""
+    radius = config["radius"]
+    parts = []
+    for q_template in config["queries"]:
+        parts.append(q_template.format(radius=radius, lat=lat, lon=lon))
+    query = f"[out:json][timeout:30];({''.join(parts)});out center;"
+
+    for endpoint in _OVERPASS_ENDPOINTS:
+        try:
+            r = requests.get(endpoint, params={"data": query}, timeout=35)
+            if r.status_code == 200:
+                return r.json().get("elements", []), None
+        except Exception:
+            continue
+    return [], "Impossible de contacter OpenStreetMap. Réessayez dans quelques secondes."
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Distance en km entre deux coordonnées GPS."""
+    R = 6371
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+# ── Configuration "Où jeter ?" ─────────────────────────────────────────────────
+
+OU_JETER_TYPES = {
+    "🔋 Piles & Batteries": {
+        "queries": [
+            # Bornes de collecte dédiées
+            'node["amenity"="recycling"]["recycling:batteries"="yes"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling:batteries"="yes"](around:{radius},{lat},{lon});',
+            # Supermarchés & magasins qui ont une borne (quand taguée sur OSM)
+            'node["shop"]["recycling:batteries"="yes"](around:{radius},{lat},{lon});',
+            'way["shop"]["recycling:batteries"="yes"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 5000,
+        "conseil": "Bacs de collecte en supermarché, bureau de tabac, magasin d'électronique.",
+        "eco_org": "Corepile / Screlec",
+    },
+    "📱 Électronique & DEEE": {
+        "queries": [
+            'node["amenity"="recycling"]["recycling:electronics"="yes"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling:electronics"="yes"](around:{radius},{lat},{lon});',
+            # Déchetteries françaises : recycling_type=centre
+            'node["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 10000,
+        "conseil": "Le vendeur est obligé de reprendre votre ancien appareil lors d'un achat (loi AGEC).",
+        "eco_org": "Ecosystem / Ecologic",
+    },
+    "👕 Vêtements & Textiles": {
+        "queries": [
+            'node["amenity"="recycling"]["recycling:clothes"="yes"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling:clothes"="yes"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 5000,
+        "conseil": "Bornes de collecte en ville, parking de supermarché.",
+        "eco_org": "Le Relais / Emmaüs",
+    },
+    "💊 Médicaments": {
+        "queries": [
+            'node["amenity"="pharmacy"](around:{radius},{lat},{lon});',
+            'way["amenity"="pharmacy"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 3000,
+        "conseil": "Rapportez vos médicaments non utilisés ou périmés en pharmacie (réseau Cyclamed).",
+        "eco_org": "Cyclamed",
+    },
+    "💡 Ampoules": {
+        "queries": [
+            'node["amenity"="recycling"]["recycling:light_bulbs"="yes"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling:light_bulbs"="yes"](around:{radius},{lat},{lon});',
+            # Centres de recyclage polyvalents
+            'node["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 8000,
+        "conseil": "Points de collecte en magasin de bricolage (Leroy Merlin, Ikea...) ou déchetterie.",
+        "eco_org": "Ecosystem",
+    },
+    "🛋️ Encombrants & Déchetterie": {
+        "queries": [
+            # En France, les déchetteries sont taggées recycling_type=centre sur OSM
+            'node["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            # Fallback avec waste_transfer_station (moins courant en France)
+            'node["amenity"="waste_transfer_station"](around:{radius},{lat},{lon});',
+            'way["amenity"="waste_transfer_station"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 15000,
+        "conseil": "Déchetterie pour meubles, matelas, électroménager volumineux, gravats.",
+        "eco_org": "Mairie / Collectivité",
+    },
+    "🎨 Peintures & Solvants": {
+        "queries": [
+            'node["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'node["amenity"="waste_transfer_station"](around:{radius},{lat},{lon});',
+            'way["amenity"="waste_transfer_station"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 15000,
+        "conseil": "Déchetterie uniquement. Ne jamais jeter dans les égouts ni à la poubelle.",
+        "eco_org": "Déchetterie locale",
+    },
+    "🛢️ Huiles usagées": {
+        "queries": [
+            'node["amenity"="recycling"]["recycling:engine_oil"="yes"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling:engine_oil"="yes"](around:{radius},{lat},{lon});',
+            'node["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+            'way["amenity"="recycling"]["recycling_type"="centre"](around:{radius},{lat},{lon});',
+        ],
+        "radius": 15000,
+        "conseil": "Garages agréés et déchetteries. Ne jamais jeter dans les égouts.",
+        "eco_org": "Huile de Vidange Pro",
+    },
+}
+
+
+# ── Données statiques ──────────────────────────────────────────────────────────
 
 def save_feedback(predicted_label, confidence, correct_label):
     file_exists = os.path.exists(FEEDBACK_FILE)
@@ -216,8 +424,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🔍 Analyser", "🛋️ Encombrants", "📋 Historique", "ℹ️ Couverture & Limites"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🔍 Analyser", "🗺️ Où jeter ?", "🛋️ Encombrants", "📋 Historique", "ℹ️ Couverture & Limites"
 ])
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -308,9 +516,186 @@ with tab1:
         """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# TAB 2 — Encombrants
+# TAB 2 — Où jeter ?
 # ──────────────────────────────────────────────────────────────────────────────
 with tab2:
+    st.title("🗺️ Où jeter ?")
+    st.caption(
+        "Pour les déchets complexes — piles, médicaments, vêtements, électronique... "
+        "Sélectionnez le type et entrez votre adresse."
+    )
+
+    type_dechet = st.selectbox(
+        "Type de déchet",
+        list(OU_JETER_TYPES.keys()),
+        key="ou_jeter_type",
+    )
+
+    config = OU_JETER_TYPES[type_dechet]
+
+    st.markdown(
+        f"<div style='background:#1b4332; border-left:4px solid #52b788; border-radius:8px;"
+        f"padding:12px 16px; margin:8px 0 16px 0'>"
+        f"<b style='color:#95d5b2'>💡 Conseil :</b> "
+        f"<span style='color:#b7e4c7'>{config['conseil']}</span><br>"
+        f"<b style='color:#95d5b2'>🏢 Éco-organisme :</b> "
+        f"<span style='color:#b7e4c7'>{config['eco_org']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Saisie adresse avec autocomplete
+    st.markdown(
+        "<p style='color:#95d5b2; font-weight:600; margin:16px 0 4px 0; font-size:15px'>"
+        "📍 Votre adresse</p>",
+        unsafe_allow_html=True,
+    )
+    if SEARCHBOX_AVAILABLE:
+        selected_addr = st_searchbox(
+            search_fr_address,
+            placeholder="Ex: 10 rue de Rivoli, Paris",
+            label=None,
+            key="ou_jeter_searchbox",
+            clear_on_submit=False,
+        )
+    else:
+        st.caption("Autocomplete non disponible — saisie manuelle")
+        raw_addr = st.text_input(
+            "",
+            placeholder="Ex: 10 rue de Rivoli, Paris",
+            key="ou_jeter_adresse",
+            label_visibility="collapsed",
+        )
+        selected_addr = None
+
+    rechercher = st.button("🔍 Rechercher les points de collecte", type="primary", key="ou_jeter_btn")
+
+    if rechercher:
+        lat = lon = label_addr = None
+
+        if SEARCHBOX_AVAILABLE:
+            if isinstance(selected_addr, dict):
+                lat = selected_addr["lat"]
+                lon = selected_addr["lon"]
+                label_addr = selected_addr["label"]
+            else:
+                st.warning("Sélectionnez une adresse dans la liste déroulante qui s'affiche au fil de la frappe.")
+        else:
+            if raw_addr.strip():
+                with st.spinner("📍 Géolocalisation en cours..."):
+                    lat, lon, label_addr = geocode_address(raw_addr)
+                if lat is None:
+                    st.error("❌ Adresse introuvable. Essayez avec le nom de ville ou code postal.")
+            else:
+                st.warning("Veuillez entrer une adresse.")
+
+        if lat is not None:
+            st.success(f"📍 **{label_addr}**")
+
+            with st.spinner("🗺️ Recherche des points de collecte..."):
+                elements, err = search_overpass(lat, lon, config)
+
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                # Filtre et tri par distance
+                results = []
+                seen = set()
+                for el in elements:
+                    el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
+                    el_lon = el.get("lon") or (el.get("center") or {}).get("lon")
+                    if not (el_lat and el_lon):
+                        continue
+                    key = (round(el_lat, 5), round(el_lon, 5))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    el["_lat"] = el_lat
+                    el["_lon"] = el_lon
+                    el["_distance"] = haversine_km(lat, lon, el_lat, el_lon)
+                    results.append(el)
+
+                results.sort(key=lambda x: x["_distance"])
+                top = results[:15]
+
+                if not top:
+                    st.warning(
+                        f"😕 Aucun point trouvé dans un rayon de {config['radius'] // 1000} km. "
+                        "Essayez une adresse dans une ville plus grande, ou contactez votre mairie."
+                    )
+                else:
+                    st.success(
+                        f"✅ {len(results)} point(s) trouvé(s) "
+                        f"dans un rayon de {config['radius'] // 1000} km"
+                    )
+
+                    # Carte interactive
+                    if FOLIUM_AVAILABLE:
+                        m = folium.Map(location=[lat, lon], zoom_start=13, tiles="CartoDB positron")
+                        m.get_root().html.add_child(folium.Element(
+                            "<style>.leaflet-control-attribution { display: none !important; }</style>"
+                        ))
+                        folium.Marker(
+                            [lat, lon],
+                            popup="📍 Votre position",
+                            icon=folium.Icon(color="red", icon="home"),
+                        ).add_to(m)
+                        for el in top:
+                            tags = el.get("tags", {})
+                            name = tags.get("name") or tags.get("operator") or "Point de collecte"
+                            addr_parts = [
+                                tags.get("addr:housenumber", ""),
+                                tags.get("addr:street", ""),
+                                tags.get("addr:city", ""),
+                            ]
+                            addr_str = " ".join(p for p in addr_parts if p)
+                            popup_html = (
+                                f"<b>{name}</b>"
+                                + (f"<br>{addr_str}" if addr_str else "")
+                                + f"<br><b>📏 {el['_distance']:.1f} km</b>"
+                            )
+                            folium.Marker(
+                                [el["_lat"], el["_lon"]],
+                                popup=folium.Popup(popup_html, max_width=220),
+                                icon=folium.Icon(color="green", icon="leaf"),
+                            ).add_to(m)
+                        st_folium(m, width=None, height=420, returned_objects=[])
+                    else:
+                        st.info("Pour la carte : `pip install folium streamlit-folium`")
+
+                    # Liste des résultats
+                    st.subheader(f"Les {min(10, len(top))} points les plus proches")
+                    for i, el in enumerate(top[:10], 1):
+                        tags = el.get("tags", {})
+                        name = tags.get("name") or tags.get("operator") or "Point de collecte"
+                        addr_num = tags.get("addr:housenumber", "")
+                        addr_street = tags.get("addr:street", "")
+                        addr_city = tags.get("addr:city", "")
+                        addr_full = " ".join(p for p in [addr_num, addr_street] if p)
+                        if addr_city:
+                            addr_full = f"{addr_full}, {addr_city}" if addr_full else addr_city
+                        opening = tags.get("opening_hours", "")
+
+                        html = (
+                            f"<div style='background:#1b4332; border:1px solid #2d6a4f;"
+                            f"border-radius:10px; padding:14px; margin-bottom:8px'>"
+                            f"<div style='display:flex; justify-content:space-between; align-items:center'>"
+                            f"<b style='color:#d8f3dc; font-size:16px'>{i}. {name}</b>"
+                            f"<span style='background:#2d6a4f; color:#d8f3dc; padding:4px 12px;"
+                            f"border-radius:20px; font-size:13px'>📏 {el['_distance']:.1f} km</span>"
+                            f"</div>"
+                        )
+                        if addr_full:
+                            html += f"<p style='color:#95d5b2; font-size:13px; margin:6px 0 0 0'>📍 {addr_full}</p>"
+                        if opening:
+                            html += f"<p style='color:#95d5b2; font-size:13px; margin:4px 0 0 0'>🕐 {opening}</p>"
+                        html += "</div>"
+                        st.markdown(html, unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 3 — Encombrants
+# ──────────────────────────────────────────────────────────────────────────────
+with tab3:
     st.title("🛋️ Gros objets & Encombrants")
     st.caption("Meubles, matelas, électroménager — que faire quand c'est trop grand pour la poubelle ?")
 
@@ -346,8 +731,8 @@ with tab2:
         <div style='background:#1b4332; border:1px solid #2d6a4f; border-radius:12px; padding:16px'>
             <b style='color:#d8f3dc'>🗺️ Trouver une déchetterie</b><br>
             <p style='color:#95d5b2; font-size:13px; margin:8px 0 0 0'>
-            Recherchez <i>"déchetterie + [votre ville]"</i>
-            ou consultez le site de votre communauté de communes.
+            Utilisez l'onglet <b>Où jeter ?</b> → Encombrants & Déchetterie
+            pour trouver la déchetterie la plus proche.
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -388,9 +773,9 @@ with tab2:
     """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# TAB 3 — Historique
+# TAB 4 — Historique
 # ──────────────────────────────────────────────────────────────────────────────
-with tab3:
+with tab4:
     st.title("📋 Historique des scans")
     st.caption("Tous les déchets analysés depuis le début de la session.")
 
@@ -439,9 +824,9 @@ with tab3:
             st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# TAB 4 — Couverture & Limites
+# TAB 5 — Couverture & Limites
 # ──────────────────────────────────────────────────────────────────────────────
-with tab4:
+with tab5:
     st.title("ℹ️ Couverture & Limites du modèle")
     st.caption("Ce que Waste AI sait reconnaître — et ce qu'il ne gère pas encore.")
 
@@ -469,7 +854,7 @@ with tab4:
     st.subheader("Hors périmètre — non pris en charge par l'IA")
     st.warning(
         "Ces catégories ne sont **pas reconnues** par le modèle. "
-        "Pour les gros objets, consultez l'onglet **Encombrants**."
+        "Utilisez l'onglet **Où jeter ?** pour trouver les points de collecte adaptés."
     )
 
     cols = st.columns(2)

@@ -9,3 +9,6 @@ requests>=2.31.0
 numpy>=1.26.0
 scikit-learn>=1.4.0
 matplotlib>=3.8.0
+folium>=0.17.0
+streamlit-folium>=0.22.0
+streamlit-searchbox>=0.1.6
