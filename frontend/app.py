@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import math
+import html as html_lib
 from PIL import Image
 import csv
 import os
@@ -135,7 +136,7 @@ div[class*="stSearchbox"] input {
 
 def search_fr_address(query: str) -> list:
     """Autocomplete adresse via API Adresse data.gouv.fr — retourne (label, {lat, lon, label})."""
-    if len(query) < 3:
+    if len(query) < 3 or len(query) > 200:
         return []
     try:
         r = requests.get(
@@ -642,11 +643,12 @@ with tab2:
                         ).add_to(m)
                         for el in top:
                             tags = el.get("tags", {})
-                            name = tags.get("name") or tags.get("operator") or "Point de collecte"
+                            # Échappement XSS sur les données OSM
+                            name = html_lib.escape(tags.get("name") or tags.get("operator") or "Point de collecte")
                             addr_parts = [
-                                tags.get("addr:housenumber", ""),
-                                tags.get("addr:street", ""),
-                                tags.get("addr:city", ""),
+                                html_lib.escape(tags.get("addr:housenumber", "")),
+                                html_lib.escape(tags.get("addr:street", "")),
+                                html_lib.escape(tags.get("addr:city", "")),
                             ]
                             addr_str = " ".join(p for p in addr_parts if p)
                             popup_html = (
@@ -667,14 +669,15 @@ with tab2:
                     st.subheader(f"Les {min(10, len(top))} points les plus proches")
                     for i, el in enumerate(top[:10], 1):
                         tags = el.get("tags", {})
-                        name = tags.get("name") or tags.get("operator") or "Point de collecte"
-                        addr_num = tags.get("addr:housenumber", "")
-                        addr_street = tags.get("addr:street", "")
-                        addr_city = tags.get("addr:city", "")
+                        # Échappement XSS — les tags OSM peuvent contenir du HTML malveillant
+                        name = html_lib.escape(tags.get("name") or tags.get("operator") or "Point de collecte")
+                        addr_num = html_lib.escape(tags.get("addr:housenumber", ""))
+                        addr_street = html_lib.escape(tags.get("addr:street", ""))
+                        addr_city = html_lib.escape(tags.get("addr:city", ""))
                         addr_full = " ".join(p for p in [addr_num, addr_street] if p)
                         if addr_city:
                             addr_full = f"{addr_full}, {addr_city}" if addr_full else addr_city
-                        opening = tags.get("opening_hours", "")
+                        opening = html_lib.escape(tags.get("opening_hours", ""))[:100]
 
                         html = (
                             f"<div style='background:#1b4332; border:1px solid #2d6a4f;"

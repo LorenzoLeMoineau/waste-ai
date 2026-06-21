@@ -12,3 +12,4 @@ matplotlib>=3.8.0
 folium>=0.17.0
 streamlit-folium>=0.22.0
 streamlit-searchbox>=0.1.6
+slowapi>=0.1.9

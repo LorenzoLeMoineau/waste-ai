@@ -1,8 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import torch
 import torchvision.transforms as transforms
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import io
 from pathlib import Path
 
@@ -38,18 +41,34 @@ else:
     MODEL_TYPE = "mobilenet_v3"
     NUM_CLASSES = 6
 
-app = FastAPI(title="Waste AI API", version="1.0.0")
+# ── Sécurité — limites upload ──────────────────────────────────────────────────
+MAX_FILE_SIZE_MB = 10
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+# Protection contre les decompression bombs (images décompressées > ~50MP)
+Image.MAX_IMAGE_PIXELS = 50_000_000
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+
+# ── App FastAPI — docs désactivées en prod ─────────────────────────────────────
+app = FastAPI(
+    title="Waste AI API",
+    version="1.0.0",
+    docs_url=None,    # désactive /docs (Swagger)
+    redoc_url=None,   # désactive /redoc
+    openapi_url=None, # désactive /openapi.json
+)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=["http://localhost:8501"],  # restreint au frontend local
+    allow_methods=["POST"],
     allow_headers=["*"],
 )
 
 # 10 classes (ordre alphabétique, utilisé par le modèle v5)
-# battery=0, bulb=1, cardboard=2, electronic=3, glass=4,
-# medicine=5, metal=6, paper=7, plastic=8, trash=9
 CATEGORIES_V5 = {
     0: {"label": "Piles & Batteries", "bac": "Bac à piles (magasin / bureau de tabac)",
         "consigne": "Ne jetez jamais une pile à la poubelle. Déposez-la dans un bac de collecte en supermarché, bureau de tabac ou magasin d'électronique."},
@@ -74,7 +93,6 @@ CATEGORIES_V5 = {
 }
 
 # 6 classes (ordre alphabétique ImageFolder pour v3/v4)
-# cardboard=0, glass=1, metal=2, paper=3, plastic=4, trash=5
 CATEGORIES_V6 = {
     0: {"label": "Carton",    "bac": "Bac jaune",                   "consigne": "Aplatissez le carton et déposez-le dans le bac jaune."},
     1: {"label": "Verre",     "bac": "Colonne à verre",             "consigne": "Déposez dans une colonne à verre. Ne mettez pas le couvercle."},
@@ -84,8 +102,7 @@ CATEGORIES_V6 = {
     5: {"label": "Résidus",   "bac": "Bac gris (ordures ménagères)", "consigne": "Déposez dans le bac gris. Cet objet n'est pas recyclable."},
 }
 
-# 8 classes v6 (ordre alphabétique ImageFolder)
-# bulb=0, cardboard=1, electronic=2, glass=3, metal=4, paper=5, plastic=6, trash=7
+# 8 classes v6
 CATEGORIES_V8 = {
     0: {"label": "Ampoules",     "bac": "Point de collecte (magasin bricolage / Ikea)",
         "consigne": "Ne jetez pas à la poubelle. Déposez dans un point de collecte Ecosystem en magasin."},
@@ -112,7 +129,6 @@ elif NUM_CLASSES == 10:
 else:
     CATEGORIES = CATEGORIES_V6
 
-# EfficientNet-B2 utilise des images 260x260
 IMG_SIZE = 260 if MODEL_TYPE == "efficientnet_b2" else 224
 
 TRANSFORM = transforms.Compose([
@@ -149,24 +165,34 @@ load_model()
 
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "model": MODEL_TYPE,
-        "checkpoint": MODEL_PATH.name,
-    }
+    return {"status": "ok", "model": MODEL_TYPE}
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+@limiter.limit("20/minute")
+async def predict(request: Request, file: UploadFile = File(...)):
     if model is None:
-        raise HTTPException(status_code=503, detail="Modele non disponible.")
+        raise HTTPException(status_code=503, detail="Modèle non disponible.")
 
-    if not file.content_type.startswith("image/"):
+    # 1. Vérification du type MIME déclaré
+    if not (file.content_type or "").startswith("image/"):
         raise HTTPException(status_code=400, detail="Fichier invalide. Envoyez une image.")
 
-    contents = await file.read()
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    # 2. Lecture avec limite de taille
+    contents = await file.read(MAX_FILE_SIZE_BYTES + 1)
+    if len(contents) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image trop volumineuse (max {MAX_FILE_SIZE_MB} Mo)."
+        )
 
+    # 3. Validation réelle du contenu image (anti-spoofing MIME)
+    try:
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+    except (UnidentifiedImageError, Exception):
+        raise HTTPException(status_code=400, detail="Le fichier n'est pas une image valide.")
+
+    # 4. Inférence
     tensor = TRANSFORM(image).unsqueeze(0)
     with torch.no_grad():
         output = model(tensor)
