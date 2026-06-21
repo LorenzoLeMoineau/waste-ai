@@ -497,6 +497,8 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "access_token" not in st.session_state:
     st.session_state.access_token = None
+if "landing_done" not in st.session_state:
+    st.session_state.landing_done = False
 
 # ── Navbar ─────────────────────────────────────────────────────────────────────
 col_brand, col_fill, col_auth = st.columns([5, 1, 2])
@@ -570,6 +572,62 @@ with col_auth:
 
 st.markdown("<hr style='border-color:#1b4332; margin:4px 0 12px 0'>", unsafe_allow_html=True)
 
+# ── Landing page (première visite) ────────────────────────────────────────────
+if not st.session_state.landing_done:
+    st.markdown("""
+    <div style='text-align:center; padding:16px 0 8px 0'>
+        <h2 style='color:#d8f3dc; font-size:1.5rem; margin-bottom:4px'>
+            Bienvenue sur Waste AI ♻️
+        </h2>
+        <p style='color:#95d5b2; font-size:15px; max-width:480px; margin:0 auto 20px auto; line-height:1.6'>
+            Prenez en photo n'importe quel déchet — l'IA identifie sa catégorie
+            et vous dit exactement où le jeter, près de chez vous.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown("""
+        <div style='background:#1b4332; border:1px solid #2d6a4f; border-radius:12px; padding:16px; text-align:center'>
+            <div style='font-size:28px'>📸</div>
+            <b style='color:#d8f3dc'>Photographiez</b>
+            <p style='color:#95d5b2; font-size:13px; margin:6px 0 0 0'>Caméra ou upload — un seul objet par photo</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_b:
+        st.markdown("""
+        <div style='background:#1b4332; border:1px solid #2d6a4f; border-radius:12px; padding:16px; text-align:center'>
+            <div style='font-size:28px'>🤖</div>
+            <b style='color:#d8f3dc'>L'IA analyse</b>
+            <p style='color:#95d5b2; font-size:13px; margin:6px 0 0 0'>EfficientNet-B2 — 6 catégories de déchets</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_c:
+        st.markdown("""
+        <div style='background:#1b4332; border:1px solid #2d6a4f; border-radius:12px; padding:16px; text-align:center'>
+            <div style='font-size:28px'>🗺️</div>
+            <b style='color:#d8f3dc'>Trouvez où jeter</b>
+            <p style='color:#95d5b2; font-size:13px; margin:6px 0 0 0'>Points de collecte près de chez vous via OSM</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    col_btn, _, _ = st.columns([1, 1, 1])
+    with col_btn:
+        if st.button("🚀 Commencer", type="primary", use_container_width=True):
+            st.session_state.landing_done = True
+            st.rerun()
+
+    st.markdown("<hr style='border-color:#1b4332; margin:20px 0 8px 0'>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='text-align:center; color:#52b788; font-size:12px'>
+        Projet scolaire • Modèle entraîné sur TrashNet & TACO •
+        Consignes ADEME / Citeo
+    </p>
+    """, unsafe_allow_html=True)
+    st.stop()
+
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 Analyser", "🗺️ Où jeter ?", "🛋️ Encombrants", "📋 Historique", "ℹ️ Couverture & Limites"
 ])
@@ -626,6 +684,13 @@ with tab1:
                     st.session_state.user["id"],
                     st.session_state.access_token,
                     result["label"], result["bac"], result["confidence"],
+                )
+                st.success("✅ Scan sauvegardé dans votre historique.")
+            else:
+                st.markdown(
+                    "<div style='color:#95d5b2; font-size:13px; margin-top:4px'>"
+                    "💡 <a href='#' style='color:#52b788'>Connectez-vous</a> pour sauvegarder cet historique définitivement.</div>",
+                    unsafe_allow_html=True,
                 )
 
             if result["confidence"] < 60:
