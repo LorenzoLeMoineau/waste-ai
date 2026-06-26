@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 import torchvision.transforms as transforms
 from PIL import Image, UnidentifiedImageError
@@ -477,6 +478,13 @@ hr { border-color: #2d6a4f !important; }
 [data-testid="stRadio"] label { color: #b7e4c7 !important; }
 iframe { border-radius: 14px !important; overflow: hidden; }
 
+/* Fix streamlit-folium iframe white space */
+[data-testid="stCustomComponentV1"] {
+    height: 300px !important;
+    min-height: unset !important;
+    overflow: hidden !important;
+}
+
 @media (max-width: 768px) {
     [data-testid="stTabs"] [role="tab"] {
         font-size: 12px !important;
@@ -821,9 +829,6 @@ with tab2:
 
                     if FOLIUM_AVAILABLE:
                         m = folium.Map(location=[lat, lon], zoom_start=13, tiles="CartoDB positron")
-                        m.get_root().html.add_child(folium.Element(
-                            "<style>.leaflet-control-attribution { display: none !important; }</style>"
-                        ))
                         folium.Marker([lat, lon], popup="📍 Votre position",
                                       icon=folium.Icon(color="red", icon="home")).add_to(m)
                         for el in top:
@@ -839,7 +844,7 @@ with tab2:
                             folium.Marker([el["_lat"], el["_lon"]],
                                           popup=folium.Popup(popup_html, max_width=220),
                                           icon=folium.Icon(color="green", icon="leaf")).add_to(m)
-                        st_folium(m, width=None, height=420, returned_objects=[])
+                        components.html(m._repr_html_(), height=320)
 
                     st.subheader(f"Les {min(10, len(top))} points les plus proches")
                     for i, el in enumerate(top[:10], 1):
