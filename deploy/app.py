@@ -425,9 +425,28 @@ st.markdown("""
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stDecoration"] { display: none !important; }
 
+/* Élargi uniquement sur desktop */
+@media (min-width: 769px) {
+    .block-container {
+        max-width: 1100px !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
+    }
+}
+
+[data-testid="stTabs"] {
+    display: flex;
+    justify-content: center;
+}
+[data-testid="stTabs"] [role="tablist"] {
+    justify-content: center !important;
+    display: flex !important;
+    width: 100% !important;
+}
 [data-testid="stTabs"] [role="tab"] {
-    color: #95d5b2; font-weight: 600; font-size: 15px;
-    padding: 8px 20px; border-radius: 8px 8px 0 0;
+    color: #95d5b2; font-weight: 600; font-size: 17px;
+    padding: 10px 28px; border-radius: 8px 8px 0 0;
+    flex: 1; text-align: center;
 }
 [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
     background: #1b4332; color: #d8f3dc !important;
@@ -478,6 +497,13 @@ hr { border-color: #2d6a4f !important; }
 [data-testid="stRadio"] label { color: #b7e4c7 !important; }
 iframe { border-radius: 14px !important; overflow: hidden; }
 
+/* Logo mobile */
+@media (max-width: 768px) {
+    .brand-logo { font-size: 32px !important; }
+    .brand-title { font-size: 20px !important; }
+    .brand-subtitle { font-size: 11px !important; }
+}
+
 /* Fix streamlit-folium iframe white space */
 [data-testid="stCustomComponentV1"] {
     height: 300px !important;
@@ -486,14 +512,62 @@ iframe { border-radius: 14px !important; overflow: hidden; }
 }
 
 @media (max-width: 768px) {
+    /* Bloque tout débordement horizontal */
+    html, body { overflow-x: hidden !important; }
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    .main, .block-container {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
+    }
+
+    /* Onglets scrollables sans déborder */
+    [data-testid="stTabs"] { width: 100% !important; }
+    [data-testid="stTabs"] [role="tablist"] {
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        justify-content: flex-start !important;
+        width: 100% !important;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none !important;
+    }
+    [data-testid="stTabs"] [role="tablist"]::-webkit-scrollbar { display: none; }
     [data-testid="stTabs"] [role="tab"] {
         font-size: 12px !important;
         padding: 6px 10px !important;
+        flex: none !important;
+        white-space: nowrap !important;
     }
-    h1 { font-size: 1.6rem !important; }
+
+    /* Colonnes Streamlit en colonne sur mobile */
+    [data-testid="stHorizontalBlock"] {
+        flex-direction: column !important;
+        gap: 0 !important;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+    }
+
+    /* Radio buttons horizontaux → verticaux */
+    [data-testid="stRadio"] > div {
+        flex-direction: column !important;
+    }
+
+    /* Caméra et upload pleine largeur */
+    [data-testid="stCameraInput"],
+    [data-testid="stFileUploader"] {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+
+    h1 { font-size: 1.5rem !important; }
     [data-testid="metric-container"] { padding: 10px !important; }
-    [data-testid="stMetricValue"] { font-size: 1.2rem !important; }
-    .block-container { padding: 1rem 0.75rem !important; }
+    [data-testid="stMetricValue"] { font-size: 1.1rem !important; }
+    .brand-logo { font-size: 28px !important; }
+    .brand-title { font-size: 18px !important; }
+    .brand-subtitle { font-size: 11px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -505,6 +579,8 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "access_token" not in st.session_state:
     st.session_state.access_token = None
+if "last_saved_image_id" not in st.session_state:
+    st.session_state.last_saved_image_id = None
 if "landing_done" not in st.session_state:
     st.session_state.landing_done = False
 
@@ -513,12 +589,12 @@ col_brand, col_fill, col_auth = st.columns([5, 1, 2])
 
 with col_brand:
     st.markdown("""
-    <div style='display:flex; align-items:center; gap:12px; padding:10px 0 6px 0'>
-        <span style='font-size:36px; line-height:1'>♻️</span>
+    <div style='display:flex; align-items:center; gap:16px; padding:12px 0 8px 0'>
+        <span class='brand-logo' style='font-size:52px; line-height:1'>♻️</span>
         <div>
-            <div style='color:#d8f3dc; font-size:22px; font-weight:bold;
+            <div class='brand-title' style='color:#d8f3dc; font-size:32px; font-weight:bold;
                         font-family:Georgia,serif; line-height:1.2'>Waste AI</div>
-            <div style='color:#95d5b2; font-size:12px'>
+            <div class='brand-subtitle' style='color:#95d5b2; font-size:14px'>
                 Photographiez un déchet — l'IA vous dit où le jeter.</div>
         </div>
     </div>
@@ -653,6 +729,8 @@ with tab1:
         image_data = st.file_uploader("Chargez une image", type=["jpg", "jpeg", "png", "webp"])
 
     if image_data is not None:
+        image_id = image_data.file_id if hasattr(image_data, "file_id") else id(image_data)
+
         image = Image.open(image_data)
         st.image(image, caption="Image analysée", use_column_width=True)
 
@@ -681,25 +759,27 @@ with tab1:
             )
             st.info(f"💡 {result['consigne']}")
 
-            st.session_state.historique.append({
-                "heure": datetime.now().strftime("%H:%M:%S"),
-                "label": result["label"],
-                "bac": result["bac"],
-                "confidence": result["confidence"],
-            })
-            if st.session_state.user and st.session_state.access_token:
-                db_save_scan(
-                    st.session_state.user["id"],
-                    st.session_state.access_token,
-                    result["label"], result["bac"], result["confidence"],
-                )
-                st.success("✅ Scan sauvegardé dans votre historique.")
-            else:
-                st.markdown(
-                    "<div style='color:#95d5b2; font-size:13px; margin-top:4px'>"
-                    "💡 <a href='#' style='color:#52b788'>Connectez-vous</a> pour sauvegarder cet historique définitivement.</div>",
-                    unsafe_allow_html=True,
-                )
+            if st.session_state.last_saved_image_id != image_id:
+                st.session_state.last_saved_image_id = image_id
+                st.session_state.historique.append({
+                    "heure": datetime.now().strftime("%H:%M:%S"),
+                    "label": result["label"],
+                    "bac": result["bac"],
+                    "confidence": result["confidence"],
+                })
+                if st.session_state.user and st.session_state.access_token:
+                    db_save_scan(
+                        st.session_state.user["id"],
+                        st.session_state.access_token,
+                        result["label"], result["bac"], result["confidence"],
+                    )
+                    st.success("✅ Scan sauvegardé dans votre historique.")
+                else:
+                    st.markdown(
+                        "<div style='color:#95d5b2; font-size:13px; margin-top:4px'>"
+                        "💡 <a href='#' style='color:#52b788'>Connectez-vous</a> pour sauvegarder cet historique définitivement.</div>",
+                        unsafe_allow_html=True,
+                    )
 
             if result["confidence"] < 60:
                 st.warning(
