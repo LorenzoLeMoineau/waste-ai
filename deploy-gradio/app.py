@@ -33,6 +33,12 @@ try:
 except ImportError:
     SEARCHBOX_AVAILABLE = False
 
+try:
+    from streamlit_js_eval import get_geolocation
+    GEOLOCATION_AVAILABLE = True
+except ImportError:
+    GEOLOCATION_AVAILABLE = False
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Waste AI 📱", page_icon="♻️",
                    layout="centered", initial_sidebar_state="collapsed")
@@ -182,6 +188,17 @@ def geocode(addr):
         return c[1],c[0],fs[0]["properties"]["label"]
     except: return None,None,None
 
+def reverse_geocode(lat, lon):
+    try:
+        r = requests.get("https://api-adresse.data.gouv.fr/reverse/",
+                         params={"lat": lat, "lon": lon}, timeout=5)
+        fs = r.json().get("features", [])
+        if fs:
+            return fs[0]["properties"]["label"]
+    except Exception:
+        pass
+    return f"{lat:.5f}, {lon:.5f}"
+
 def haversine(la1,lo1,la2,lo2):
     R=6371; dlat=math.radians(la2-la1); dlon=math.radians(lo2-lo1)
     a=math.sin(dlat/2)**2+math.cos(math.radians(la1))*math.cos(math.radians(la2))*math.sin(dlon/2)**2
@@ -198,7 +215,9 @@ def search_overpass(lat,lon,config):
     return [],"Impossible de contacter OpenStreetMap."
 
 # ── Session state ──────────────────────────────────────────────────────────────
-for k,v in [("user",None),("token",None),("last_img_id",None)]:
+for k,v in [("user",None),("token",None),("last_img_id",None),
+             ("geo_requested",False),("geo_counter",0),
+             ("geo_coords",None),("geo_label_cache",None)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -325,6 +344,40 @@ with tab2:
                 f"<span style='color:#52b788;font-size:12px'>{config['eco_org']}</span></div>",
                 unsafe_allow_html=True)
 
+    geo_lat = geo_lon = geo_label = None
+
+    if GEOLOCATION_AVAILABLE:
+        if st.button("📍 Me localiser automatiquement", type="secondary",
+                     use_container_width=True, key="geo_btn"):
+            st.session_state.geo_requested = True
+            st.session_state.geo_counter += 1
+            st.session_state.geo_coords = None
+            st.session_state.geo_label_cache = None
+
+        if st.session_state.geo_requested:
+            with st.spinner("📍 Localisation..."):
+                loc = get_geolocation(f"geo_{st.session_state.geo_counter}")
+            if loc and isinstance(loc, dict) and loc.get("coords"):
+                st.session_state.geo_coords = loc["coords"]
+                st.session_state.geo_requested = False
+
+        if st.session_state.geo_coords:
+            geo_lat = st.session_state.geo_coords["latitude"]
+            geo_lon = st.session_state.geo_coords["longitude"]
+            if not st.session_state.geo_label_cache:
+                st.session_state.geo_label_cache = reverse_geocode(geo_lat, geo_lon)
+            geo_label = st.session_state.geo_label_cache
+            col_ok, col_clear = st.columns([4, 1])
+            with col_ok:
+                st.success(f"📍 {geo_label}")
+            with col_clear:
+                if st.button("✕", key="clear_geo", help="Effacer"):
+                    st.session_state.geo_coords = None
+                    st.session_state.geo_label_cache = None
+                    st.rerun()
+
+        st.markdown("<p style='color:#52b788;text-align:center;font-size:13px;margin:4px 0'>— ou entrez votre adresse —</p>", unsafe_allow_html=True)
+
     if SEARCHBOX_AVAILABLE:
         selected = st_searchbox(search_addr, placeholder="Ex: 10 rue de Rivoli, Paris", key="addr_search")
     else:
@@ -333,13 +386,15 @@ with tab2:
 
     if st.button("🔍 Rechercher", type="primary"):
         lat = lon = label_addr = None
-        if SEARCHBOX_AVAILABLE and isinstance(selected, dict):
+        if geo_lat is not None:
+            lat, lon, label_addr = geo_lat, geo_lon, geo_label
+        elif SEARCHBOX_AVAILABLE and isinstance(selected, dict):
             lat, lon, label_addr = selected["lat"], selected["lon"], selected["label"]
         elif not SEARCHBOX_AVAILABLE and raw_addr.strip():
             with st.spinner("📍 Géolocalisation..."):
                 lat, lon, label_addr = geocode(raw_addr)
         else:
-            st.warning("Sélectionnez ou entrez une adresse.")
+            st.warning("Localisez-vous ou entrez une adresse.")
 
         if lat:
             st.success(f"📍 **{label_addr}**")

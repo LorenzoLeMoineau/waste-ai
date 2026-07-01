@@ -8,4 +8,5 @@ numpy>=1.26.0
 folium==0.18.0
 streamlit-folium==0.22.0
 streamlit-searchbox>=0.1.6
+streamlit-js-eval>=0.0.9
 supabase>=2.0.0

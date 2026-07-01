@@ -38,6 +38,12 @@ try:
 except ImportError:
     SEARCHBOX_AVAILABLE = False
 
+try:
+    from streamlit_js_eval import get_geolocation
+    GEOLOCATION_AVAILABLE = True
+except ImportError:
+    GEOLOCATION_AVAILABLE = False
+
 # ── Sécurité ───────────────────────────────────────────────────────────────────
 Image.MAX_IMAGE_PIXELS = 50_000_000
 
@@ -149,6 +155,22 @@ def geocode_address(address):
         return coords[1], coords[0], label
     except Exception:
         return None, None, None
+
+
+def reverse_geocode(lat, lon):
+    try:
+        r = requests.get(
+            "https://api-adresse.data.gouv.fr/reverse/",
+            params={"lat": lat, "lon": lon},
+            timeout=5,
+        )
+        r.raise_for_status()
+        features = r.json().get("features", [])
+        if features:
+            return features[0]["properties"]["label"]
+    except Exception:
+        pass
+    return f"{lat:.5f}, {lon:.5f}"
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -583,6 +605,14 @@ if "last_saved_image_id" not in st.session_state:
     st.session_state.last_saved_image_id = None
 if "landing_done" not in st.session_state:
     st.session_state.landing_done = False
+if "geo_requested" not in st.session_state:
+    st.session_state.geo_requested = False
+if "geo_counter" not in st.session_state:
+    st.session_state.geo_counter = 0
+if "geo_coords" not in st.session_state:
+    st.session_state.geo_coords = None
+if "geo_label_cache" not in st.session_state:
+    st.session_state.geo_label_cache = None
 
 # ── Navbar ─────────────────────────────────────────────────────────────────────
 col_brand, col_fill, col_auth = st.columns([5, 1, 2])
@@ -835,10 +865,51 @@ with tab2:
     )
 
     st.markdown(
-        "<p style='color:#95d5b2; font-weight:600; margin:16px 0 4px 0; font-size:15px'>"
-        "📍 Votre adresse</p>",
+        "<p style='color:#95d5b2; font-weight:600; margin:16px 0 8px 0; font-size:15px'>"
+        "📍 Votre position</p>",
         unsafe_allow_html=True,
     )
+
+    # ── Bouton "Me localiser" ──────────────────────────────────────────────────
+    geo_lat = geo_lon = geo_label = None
+
+    if GEOLOCATION_AVAILABLE:
+        col_l, col_btn, col_r = st.columns([1, 3, 1])
+        with col_btn:
+            if st.button("📍 Me localiser automatiquement", type="secondary",
+                         use_container_width=True, key="geo_btn"):
+                st.session_state.geo_requested = True
+                st.session_state.geo_counter += 1
+                st.session_state.geo_coords = None
+                st.session_state.geo_label_cache = None
+
+        if st.session_state.geo_requested:
+            with st.spinner("📍 Demande de localisation..."):
+                loc = get_geolocation(f"geo_{st.session_state.geo_counter}")
+            if loc and isinstance(loc, dict) and loc.get("coords"):
+                st.session_state.geo_coords = loc["coords"]
+                st.session_state.geo_requested = False
+
+        if st.session_state.geo_coords:
+            geo_lat = st.session_state.geo_coords["latitude"]
+            geo_lon = st.session_state.geo_coords["longitude"]
+            if not st.session_state.geo_label_cache:
+                st.session_state.geo_label_cache = reverse_geocode(geo_lat, geo_lon)
+            geo_label = st.session_state.geo_label_cache
+            col_ok, col_clear = st.columns([4, 1])
+            with col_ok:
+                st.success(f"📍 {geo_label}")
+            with col_clear:
+                if st.button("✕", key="clear_geo", help="Effacer la position"):
+                    st.session_state.geo_coords = None
+                    st.session_state.geo_label_cache = None
+                    st.rerun()
+
+        st.markdown(
+            "<div style='text-align:center; color:#52b788; font-size:13px; "
+            "padding:6px 0 4px 0'>— ou entrez votre adresse —</div>",
+            unsafe_allow_html=True,
+        )
 
     if SEARCHBOX_AVAILABLE:
         selected_addr = st_searchbox(
@@ -858,11 +929,13 @@ with tab2:
     if rechercher:
         lat = lon = label_addr = None
 
-        if SEARCHBOX_AVAILABLE:
+        if geo_lat is not None:
+            lat, lon, label_addr = geo_lat, geo_lon, geo_label
+        elif SEARCHBOX_AVAILABLE:
             if isinstance(selected_addr, dict):
                 lat, lon, label_addr = selected_addr["lat"], selected_addr["lon"], selected_addr["label"]
             else:
-                st.warning("Sélectionnez une adresse dans la liste déroulante.")
+                st.warning("Localisez-vous ou sélectionnez une adresse dans la liste.")
         else:
             if raw_addr.strip():
                 with st.spinner("📍 Géolocalisation en cours..."):
@@ -870,7 +943,7 @@ with tab2:
                 if lat is None:
                     st.error("❌ Adresse introuvable.")
             else:
-                st.warning("Veuillez entrer une adresse.")
+                st.warning("Localisez-vous ou entrez une adresse.")
 
         if lat is not None:
             st.success(f"📍 **{label_addr}**")
