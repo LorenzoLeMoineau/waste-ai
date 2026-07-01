@@ -712,8 +712,8 @@ if not st.session_state.landing_done:
     """, unsafe_allow_html=True)
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔍 Analyser", "🗺️ Où jeter ?", "🛋️ Encombrants", "📋 Historique", "ℹ️ Couverture & Limites"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🔍 Analyser", "🗺️ Où jeter ?", "🛋️ Encombrants", "📋 Historique", "ℹ️ Couverture & Limites", "📱 Version Mobile"
 ])
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1168,3 +1168,41 @@ with tab5:
         st.caption("Transfer learning — ImageNet → déchets")
         st.metric("Référentiel", "ADEME / Citeo")
         st.caption("Consignes de tri officielles France")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 6 — Version Mobile
+# ──────────────────────────────────────────────────────────────────────────────
+with tab6:
+    MOBILE_URL = "https://tigoda204-waste-ai-v2.hf.space"
+    QR_URL = f"https://api.qrserver.com/v1/create-qr-code/?size=220x220&data={MOBILE_URL}&bgcolor=1b4332&color=d8f3dc&margin=10"
+
+    st.markdown("""
+    <div style='text-align:center; padding:24px 0 16px 0'>
+        <div style='font-size:48px'>📱</div>
+        <h2 style='color:#d8f3dc; margin:8px 0'>Version Mobile</h2>
+        <p style='color:#95d5b2; font-size:15px; margin:0'>
+            Scannez le QR code avec votre téléphone pour accéder à la version mobile de Waste AI.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        st.image(QR_URL, use_column_width=True)
+
+    st.markdown(
+        f"<p style='text-align:center; color:#52b788; font-size:13px; margin-top:12px'>"
+        f"<a href='{MOBILE_URL}' target='_blank' style='color:#52b788'>{MOBILE_URL}</a></p>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("""
+    <div style='background:#1b4332; border:1px solid #2d6a4f; border-radius:12px; padding:16px; margin-top:16px'>
+        <b style='color:#d8f3dc'>✅ La version mobile c'est quoi ?</b>
+        <ul style='color:#95d5b2; margin:8px 0 0 0; font-size:14px'>
+            <li>Interface optimisée pour les petits écrans</li>
+            <li>Même modèle IA, même Supabase</li>
+            <li>Même compte — historique partagé entre les deux versions</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)

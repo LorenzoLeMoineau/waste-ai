@@ -1,12 +1,8 @@
-import gradio as gr
+import streamlit as st
 import torch
 import torchvision.transforms as transforms
 from PIL import Image, UnidentifiedImageError
-import io
-import math
-import requests
-import os
-import html as html_lib
+import io, math, requests, os, html as html_lib
 from datetime import datetime
 from pathlib import Path
 
@@ -24,59 +20,101 @@ try:
 except ImportError:
     SUPABASE_AVAILABLE = False
 
+try:
+    import folium
+    from streamlit_folium import st_folium
+    FOLIUM_AVAILABLE = True
+except ImportError:
+    FOLIUM_AVAILABLE = False
+
+try:
+    from streamlit_searchbox import st_searchbox
+    SEARCHBOX_AVAILABLE = True
+except ImportError:
+    SEARCHBOX_AVAILABLE = False
+
 # ── Config ─────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Waste AI 📱", page_icon="♻️",
+                   layout="centered", initial_sidebar_state="collapsed")
+
+Image.MAX_IMAGE_PIXELS = 50_000_000
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 MODEL_PATH = Path(__file__).parent / "waste_ai_v4.pt"
 NUM_CLASSES = 6
 IMG_SIZE = 260
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
-Image.MAX_IMAGE_PIXELS = 50_000_000
 
 _SB_URL = os.environ.get("SUPABASE_URL", "")
 _SB_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 DB_READY = SUPABASE_AVAILABLE and bool(_SB_URL) and bool(_SB_KEY)
 
+# ── CSS Mobile ─────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] { background: linear-gradient(160deg,#0d1f14 0%,#1a2e1e 100%) !important; }
+[data-testid="stHeader"], [data-testid="stDecoration"] { display:none !important; }
+.block-container { padding: 0.8rem 0.8rem 2rem 0.8rem !important; max-width: 480px !important; margin: 0 auto !important; }
+h1 { color:#d8f3dc !important; font-family:Georgia,serif !important; font-size:1.8rem !important; }
+h2,h3 { color:#95d5b2 !important; }
+p, label, .stMarkdown { color:#b7e4c7 !important; }
+[data-testid="stTabs"] [role="tab"] { color:#95d5b2 !important; font-weight:600 !important; font-size:13px !important; padding:6px 10px !important; }
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] { background:#1b4332 !important; color:#d8f3dc !important; border-bottom:3px solid #52b788 !important; }
+[data-testid="baseButton-primary"] { background:linear-gradient(135deg,#2d6a4f,#52b788) !important; border:none !important; color:white !important; font-weight:bold !important; border-radius:12px !important; width:100% !important; padding:0.6rem !important; }
+[data-testid="baseButton-secondary"] { background:transparent !important; border:1px solid #52b788 !important; color:#95d5b2 !important; border-radius:12px !important; }
+[data-testid="stFileUploader"], [data-testid="stCameraInput"] { background:#1b4332 !important; border:2px dashed #52b788 !important; border-radius:14px !important; }
+[data-testid="stExpander"] { background:#1b4332 !important; border:1px solid #2d6a4f !important; border-radius:12px !important; }
+[data-testid="metric-container"] { background:#1b4332 !important; border:1px solid #2d6a4f !important; border-radius:12px !important; padding:12px !important; }
+[data-testid="stMetricLabel"] { color:#95d5b2 !important; font-size:12px !important; }
+[data-testid="stMetricValue"] { color:#d8f3dc !important; font-size:1.2rem !important; }
+[data-testid="stInfo"] { background:#1b4332 !important; border-left:4px solid #52b788 !important; color:#d8f3dc !important; }
+[data-testid="stSuccess"] { background:#1b4332 !important; border-left:4px solid #52b788 !important; }
+[data-testid="stWarning"] { background:#3d2b00 !important; border-left:4px solid #f4a261 !important; }
+[data-testid="stError"] { background:#3d0000 !important; border-left:4px solid #e63946 !important; }
+input, textarea, select { background:#1b4332 !important; color:#d8f3dc !important; border:1px solid #2d6a4f !important; border-radius:10px !important; }
+hr { border-color:#2d6a4f !important; }
+div[class*="searchbox"] input { background:#1b4332 !important; color:#d8f3dc !important; border:1px solid #2d6a4f !important; border-radius:10px !important; }
+iframe { border-radius:12px !important; overflow:hidden; }
+[data-testid="stCustomComponentV1"] { height:280px !important; min-height:unset !important; overflow:hidden !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Modèle ─────────────────────────────────────────────────────────────────────
 TRANSFORM = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
 ])
 
 CATEGORIES = {
-    0: {"label": "Carton",    "bac": "Bac jaune",                    "emoji": "📦", "consigne": "Aplatissez le carton et déposez-le dans le bac jaune."},
-    1: {"label": "Verre",     "bac": "Colonne à verre",              "emoji": "🍾", "consigne": "Déposez dans une colonne à verre. Retirez les couvercles."},
-    2: {"label": "Métal",     "bac": "Bac jaune",                    "emoji": "🥫", "consigne": "Déposez dans le bac jaune. Écrasez les canettes si possible."},
-    3: {"label": "Papier",    "bac": "Bac jaune",                    "emoji": "📄", "consigne": "Déposez dans le bac jaune. Pas de papier gras ni de mouchoirs."},
-    4: {"label": "Plastique", "bac": "Bac jaune",                    "emoji": "🧴", "consigne": "Déposez dans le bac jaune. Videz et rincez les emballages."},
-    5: {"label": "Résidus",   "bac": "Bac gris (ordures ménagères)", "emoji": "🗑️", "consigne": "Déposez dans le bac gris. Cet objet n'est pas recyclable."},
+    0: {"label":"Carton",    "bac":"Bac jaune",                    "emoji":"📦", "consigne":"Aplatissez le carton et déposez dans le bac jaune."},
+    1: {"label":"Verre",     "bac":"Colonne à verre",              "emoji":"🍾", "consigne":"Déposez dans une colonne à verre. Retirez les couvercles."},
+    2: {"label":"Métal",     "bac":"Bac jaune",                    "emoji":"🥫", "consigne":"Déposez dans le bac jaune. Écrasez les canettes si possible."},
+    3: {"label":"Papier",    "bac":"Bac jaune",                    "emoji":"📄", "consigne":"Déposez dans le bac jaune. Pas de papier gras."},
+    4: {"label":"Plastique", "bac":"Bac jaune",                    "emoji":"🧴", "consigne":"Déposez dans le bac jaune. Videz et rincez."},
+    5: {"label":"Résidus",   "bac":"Bac gris (ordures ménagères)", "emoji":"🗑️", "consigne":"Déposez dans le bac gris. Non recyclable."},
 }
 
 BAC_COLORS = {
-    "Bac jaune":                    "#f5c518",
-    "Colonne à verre":              "#2d6a4f",
-    "Bac gris (ordures ménagères)": "#616161",
+    "Bac jaune":"#f5c518",
+    "Colonne à verre":"#2d6a4f",
+    "Bac gris (ordures ménagères)":"#616161",
 }
 
 OU_JETER_TYPES = {
-    "🔋 Piles & Batteries":         {"queries": ['node["amenity"="recycling"]["recycling:batteries"="yes"](around:{r},{lat},{lon});'], "radius": 5000,  "conseil": "Bacs de collecte en supermarché, bureau de tabac.", "eco_org": "Corepile / Screlec"},
-    "📱 Électronique & DEEE":       {"queries": ['node["amenity"="recycling"]["recycling:electronics"="yes"](around:{r},{lat},{lon});', 'node["amenity"="recycling"]["recycling_type"="centre"](around:{r},{lat},{lon});'], "radius": 10000, "conseil": "Le vendeur est obligé de reprendre votre ancien appareil (loi AGEC).", "eco_org": "Ecosystem / Ecologic"},
-    "👕 Vêtements & Textiles":      {"queries": ['node["amenity"="recycling"]["recycling:clothes"="yes"](around:{r},{lat},{lon});'], "radius": 5000,  "conseil": "Bornes de collecte en ville, parking de supermarché.", "eco_org": "Le Relais / Emmaüs"},
-    "💊 Médicaments":               {"queries": ['node["amenity"="pharmacy"](around:{r},{lat},{lon});'], "radius": 3000, "conseil": "Rapportez vos médicaments non utilisés en pharmacie.", "eco_org": "Cyclamed"},
-    "🛋️ Encombrants & Déchetterie": {"queries": ['node["amenity"="recycling"]["recycling_type"="centre"](around:{r},{lat},{lon});', 'node["amenity"="waste_transfer_station"](around:{r},{lat},{lon});'], "radius": 15000, "conseil": "Déchetterie pour meubles, matelas, électroménager volumineux.", "eco_org": "Mairie / Collectivité"},
+    "🔋 Piles & Batteries":         {"queries":['node["amenity"="recycling"]["recycling:batteries"="yes"](around:{r},{lat},{lon});'],"radius":5000,"conseil":"Bacs en supermarché, bureau de tabac.","eco_org":"Corepile / Screlec"},
+    "📱 Électronique & DEEE":       {"queries":['node["amenity"="recycling"]["recycling:electronics"="yes"](around:{r},{lat},{lon});','node["amenity"="recycling"]["recycling_type"="centre"](around:{r},{lat},{lon});'],"radius":10000,"conseil":"Le vendeur doit reprendre votre ancien appareil (loi AGEC).","eco_org":"Ecosystem / Ecologic"},
+    "👕 Vêtements & Textiles":      {"queries":['node["amenity"="recycling"]["recycling:clothes"="yes"](around:{r},{lat},{lon});'],"radius":5000,"conseil":"Bornes en ville, parking de supermarché.","eco_org":"Le Relais / Emmaüs"},
+    "💊 Médicaments":               {"queries":['node["amenity"="pharmacy"](around:{r},{lat},{lon});'],"radius":3000,"conseil":"Rapportez en pharmacie (réseau Cyclamed).","eco_org":"Cyclamed"},
+    "🛋️ Encombrants & Déchetterie": {"queries":['node["amenity"="recycling"]["recycling_type"="centre"](around:{r},{lat},{lon});','node["amenity"="waste_transfer_station"](around:{r},{lat},{lon});'],"radius":15000,"conseil":"Déchetterie pour meubles, matelas, électroménager.","eco_org":"Mairie / Collectivité"},
 }
 
-_OVERPASS_ENDPOINTS = [
+_OVERPASS = [
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     "https://overpass.osm.ch/api/interpreter",
     "https://overpass-api.de/api/interpreter",
 ]
 
-# ── Modèle ─────────────────────────────────────────────────────────────────────
-_model = None
-
+@st.cache_resource(show_spinner="🌿 Chargement du modèle IA...")
 def load_model():
-    global _model
-    if _model is not None:
-        return _model
     if not MODEL_PATH.exists():
         return None
     try:
@@ -87,513 +125,315 @@ def load_model():
             m.classifier[3] = torch.nn.Linear(m.classifier[3].in_features, NUM_CLASSES)
         m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
         m.eval()
-        _model = m
         return m
-    except Exception as e:
-        print(f"Erreur chargement modèle: {e}")
+    except Exception:
         return None
 
-load_model()
-
 # ── Supabase ───────────────────────────────────────────────────────────────────
-def _authed_client(token):
-    client = _sb_create(_SB_URL, _SB_KEY)
-    client.postgrest.auth(token)
-    return client
+def _client(token=None):
+    c = _sb_create(_SB_URL, _SB_KEY)
+    if token:
+        c.postgrest.auth(token)
+    return c
 
 def auth_login(email, password):
     try:
-        client = _sb_create(_SB_URL, _SB_KEY)
-        r = client.auth.sign_in_with_password({"email": email, "password": password})
+        r = _client().auth.sign_in_with_password({"email":email,"password":password})
         return r.user, r.session, None
-    except Exception:
+    except:
         return None, None, "Email ou mot de passe incorrect."
 
 def auth_signup(email, password):
     try:
-        client = _sb_create(_SB_URL, _SB_KEY)
-        r = client.auth.sign_up({"email": email, "password": password})
+        r = _client().auth.sign_up({"email":email,"password":password})
         return r.user, r.session, None
     except Exception as e:
         return None, None, str(e)
 
-def db_save_scan(user_id, token, label, bac, confidence):
+def db_save(uid, tok, label, bac, conf):
     try:
-        _authed_client(token).table("scans").insert({
-            "user_id": user_id, "label": label, "bac": bac, "confidence": confidence,
-        }).execute()
-    except Exception:
-        pass
+        _client(tok).table("scans").insert({"user_id":uid,"label":label,"bac":bac,"confidence":conf}).execute()
+    except: pass
 
-def db_get_scans(user_id, token):
+def db_get(uid, tok):
     try:
-        r = (_authed_client(token).table("scans")
-             .select("label, bac, confidence, scanned_at")
-             .eq("user_id", user_id)
-             .order("scanned_at", desc=True)
-             .limit(100).execute())
+        r = _client(tok).table("scans").select("label,bac,confidence,scanned_at").eq("user_id",uid).order("scanned_at",desc=True).limit(100).execute()
         return r.data or []
-    except Exception:
-        return []
+    except: return []
 
-def db_clear_scans(user_id, token):
+def db_clear(uid, tok):
+    try: _client(tok).table("scans").delete().eq("user_id",uid).execute()
+    except: pass
+
+# ── Géoloc ─────────────────────────────────────────────────────────────────────
+def search_addr(q):
+    if len(q) < 3: return []
     try:
-        _authed_client(token).table("scans").delete().eq("user_id", user_id).execute()
-    except Exception:
-        pass
+        r = requests.get("https://api-adresse.data.gouv.fr/search/", params={"q":q,"limit":5}, timeout=5)
+        return [(f["properties"]["label"],{"lat":f["geometry"]["coordinates"][1],"lon":f["geometry"]["coordinates"][0],"label":f["properties"]["label"]}) for f in r.json().get("features",[])]
+    except: return []
 
-# ── Géolocalisation ────────────────────────────────────────────────────────────
-def geocode_address(address):
+def geocode(addr):
     try:
-        r = requests.get("https://api-adresse.data.gouv.fr/search/", params={"q": address, "limit": 1}, timeout=10)
-        features = r.json().get("features", [])
-        if not features:
-            return None, None, None
-        coords = features[0]["geometry"]["coordinates"]
-        return coords[1], coords[0], features[0]["properties"]["label"]
-    except Exception:
-        return None, None, None
+        r = requests.get("https://api-adresse.data.gouv.fr/search/", params={"q":addr,"limit":1}, timeout=8)
+        fs = r.json().get("features",[])
+        if not fs: return None,None,None
+        c = fs[0]["geometry"]["coordinates"]
+        return c[1],c[0],fs[0]["properties"]["label"]
+    except: return None,None,None
 
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+def haversine(la1,lo1,la2,lo2):
+    R=6371; dlat=math.radians(la2-la1); dlon=math.radians(lo2-lo1)
+    a=math.sin(dlat/2)**2+math.cos(math.radians(la1))*math.cos(math.radians(la2))*math.sin(dlon/2)**2
+    return R*2*math.atan2(math.sqrt(a),math.sqrt(1-a))
 
-def search_overpass(lat, lon, config):
-    parts = [q.format(r=config["radius"], lat=lat, lon=lon) for q in config["queries"]]
-    query = f"[out:json][timeout:30];({''.join(parts)});out center;"
-    for ep in _OVERPASS_ENDPOINTS:
+def search_overpass(lat,lon,config):
+    parts=[q.format(r=config["radius"],lat=lat,lon=lon) for q in config["queries"]]
+    query=f"[out:json][timeout:30];({''.join(parts)});out center;"
+    for ep in _OVERPASS:
         try:
-            r = requests.get(ep, params={"data": query}, timeout=35)
-            if r.status_code == 200:
-                return r.json().get("elements", []), None
-        except Exception:
-            continue
-    return [], "Impossible de contacter OpenStreetMap."
+            r=requests.get(ep,params={"data":query},timeout=35)
+            if r.status_code==200: return r.json().get("elements",[]),None
+        except: continue
+    return [],"Impossible de contacter OpenStreetMap."
 
-# ── Fonctions principales ──────────────────────────────────────────────────────
-def predict(image, user_state):
-    if image is None:
-        return "<p style='color:#95d5b2;text-align:center;padding:30px;font-size:16px'>📸 Prenez une photo ou uploadez une image pour commencer.</p>"
+# ── Session state ──────────────────────────────────────────────────────────────
+for k,v in [("user",None),("token",None),("last_img_id",None)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-    model = load_model()
-    if model is None:
-        return "<p style='color:#e63946'>❌ Modèle non disponible (fichier waste_ai_v4.pt manquant).</p>"
+# ── Header ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style='text-align:center;padding:16px 0 4px 0'>
+    <span style='font-size:44px'>♻️</span>
+    <h1 style='margin:4px 0;font-size:1.8rem;color:#d8f3dc;font-family:Georgia,serif'>Waste AI</h1>
+    <p style='color:#95d5b2;font-size:13px;margin:0'>Photographiez un déchet — l'IA vous dit où le jeter.</p>
+</div>
+""", unsafe_allow_html=True)
 
-    try:
-        img = Image.fromarray(image).convert("RGB")
-    except Exception:
-        return "<p style='color:#e63946'>❌ Image invalide.</p>"
+# ── Auth compacte ──────────────────────────────────────────────────────────────
+if st.session_state.user:
+    email_short = st.session_state.user["email"].split("@")[0]
+    col1, col2 = st.columns([3,1])
+    with col1:
+        st.markdown(f"<p style='color:#52b788;margin:4px 0;font-size:13px'>👤 {email_short}</p>", unsafe_allow_html=True)
+    with col2:
+        if st.button("Déco.", type="secondary", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.token = None
+            st.rerun()
+elif DB_READY:
+    with st.expander("👤 Connexion / Créer un compte"):
+        mode = st.radio("", ["Se connecter","Créer un compte"], horizontal=True, label_visibility="collapsed")
+        email = st.text_input("Email", key="auth_email")
+        pwd   = st.text_input("Mot de passe", type="password", key="auth_pwd")
+        if mode == "Créer un compte":
+            pwd2 = st.text_input("Confirmer", type="password", key="auth_pwd2")
+        if st.button("Valider", type="primary"):
+            if mode == "Se connecter":
+                u, s, err = auth_login(email, pwd)
+            else:
+                if pwd != pwd2:
+                    st.error("Les mots de passe ne correspondent pas.")
+                    st.stop()
+                u, s, err = auth_signup(email, pwd)
+            if err:
+                st.error(err)
+            elif u and s:
+                st.session_state.user  = {"id":str(u.id),"email":u.email}
+                st.session_state.token = s.access_token
+                st.rerun()
+            else:
+                st.success("Compte créé ! Connectez-vous.")
 
-    tensor = TRANSFORM(img).unsqueeze(0)
-    with torch.no_grad():
-        output = model(tensor)
-        proba = torch.softmax(output, dim=1)
-        confidence, class_id = torch.max(proba, dim=1)
+st.markdown("<hr style='margin:8px 0'>", unsafe_allow_html=True)
 
-    cat = CATEGORIES[class_id.item()]
-    conf = round(confidence.item() * 100, 1)
-    color = BAC_COLORS.get(cat["bac"], "#2d6a4f")
-    conf_color = "#52b788" if conf >= 80 else "#f4a261" if conf >= 60 else "#e63946"
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["🔍 Analyser", "🗺️ Où jeter ?", "📋 Historique"])
 
-    if DB_READY and user_state.get("id") and user_state.get("token"):
-        db_save_scan(user_state["id"], user_state["token"], cat["label"], cat["bac"], conf)
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 1 — Analyser
+# ──────────────────────────────────────────────────────────────────────────────
+with tab1:
+    source = st.radio("Source", ["📷 Caméra","📁 Upload"], horizontal=True, label_visibility="collapsed")
+    image_data = st.camera_input("") if source == "📷 Caméra" else st.file_uploader("", type=["jpg","jpeg","png","webp"])
 
-    warning = ""
-    if conf < 60:
-        warning = "<div style='background:#3d2b00;border-left:4px solid #f4a261;border-radius:8px;padding:12px;margin-top:12px;color:#f4a261'>⚠️ Confiance faible — essayez sur fond neutre avec un seul objet.</div>"
+    if image_data:
+        img_id = getattr(image_data, "file_id", id(image_data))
+        image  = Image.open(image_data)
+        st.image(image, use_container_width=True)
 
-    return f"""
-<div>
-    <div style='display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap'>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:12px;padding:16px;flex:1;min-width:130px;text-align:center'>
-            <div style='color:#95d5b2;font-size:12px;margin-bottom:6px'>DÉCHET DÉTECTÉ</div>
-            <div style='color:#d8f3dc;font-size:20px;font-weight:bold'>{cat['emoji']} {cat['label']}</div>
-        </div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:12px;padding:16px;flex:1;min-width:130px;text-align:center'>
-            <div style='color:#95d5b2;font-size:12px;margin-bottom:6px'>CONFIANCE</div>
-            <div style='color:{conf_color};font-size:22px;font-weight:bold'>{conf}%</div>
-        </div>
-    </div>
-    <div style='background:{color};color:{"#000" if color=="#f5c518" else "white"};padding:16px;border-radius:12px;font-size:18px;font-weight:bold;text-align:center;margin-bottom:12px'>
-        🗑️ {cat['bac']}
-    </div>
-    <div style='background:#1b4332;border-left:4px solid #52b788;border-radius:8px;padding:12px;color:#d8f3dc'>
-        💡 {cat['consigne']}
-    </div>
-    {warning}
-</div>"""
+        with st.spinner("🌿 Analyse..."):
+            model = load_model()
+            if model is None:
+                st.error("❌ Modèle non disponible.")
+            else:
+                image_data.seek(0)
+                raw = image_data.read()
+                try:
+                    img = Image.open(io.BytesIO(raw)).convert("RGB")
+                    tensor = TRANSFORM(img).unsqueeze(0)
+                    with torch.no_grad():
+                        out = model(tensor)
+                        prob = torch.softmax(out, dim=1)
+                        conf, cid = torch.max(prob, dim=1)
+                    cat  = CATEGORIES[cid.item()]
+                    conf = round(conf.item()*100, 1)
+                    color = BAC_COLORS.get(cat["bac"],"#2d6a4f")
+                    txt_color = "#000" if color == "#f5c518" else "white"
 
-def rechercher_points(type_dechet, adresse):
-    if not adresse.strip():
-        return "<p style='color:#f4a261'>⚠️ Entrez une adresse.</p>"
-    lat, lon, label_addr = geocode_address(adresse)
-    if lat is None:
-        return "<p style='color:#e63946'>❌ Adresse introuvable. Essayez avec le nom de ville.</p>"
+                    st.divider()
+                    c1, c2 = st.columns(2)
+                    c1.metric("Déchet", f"{cat['emoji']} {cat['label']}")
+                    conf_color = "#52b788" if conf>=80 else "#f4a261" if conf>=60 else "#e63946"
+                    c2.metric("Confiance", f"{conf}%")
+
+                    st.markdown(
+                        f"<div style='background:{color};color:{txt_color};padding:16px;border-radius:12px;"
+                        f"font-size:18px;font-weight:bold;text-align:center;margin:10px 0'>🗑️ {cat['bac']}</div>",
+                        unsafe_allow_html=True)
+                    st.info(f"💡 {cat['consigne']}")
+
+                    if conf < 60:
+                        st.warning("⚠️ Confiance faible — essayez sur fond neutre.")
+
+                    # Sauvegarde unique
+                    if st.session_state.last_img_id != img_id:
+                        st.session_state.last_img_id = img_id
+                        if st.session_state.user and st.session_state.token:
+                            db_save(st.session_state.user["id"], st.session_state.token,
+                                    cat["label"], cat["bac"], conf)
+                            st.success("✅ Scan sauvegardé.")
+
+                except (UnidentifiedImageError, Exception) as e:
+                    st.error(f"❌ Image invalide : {e}")
+    else:
+        st.markdown("""
+        <div style='text-align:center;padding:32px;border:2px dashed #2d6a4f;border-radius:16px;margin-top:12px'>
+            <div style='font-size:40px'>📸</div>
+            <p style='color:#95d5b2;margin:8px 0'>Prenez une photo ou uploadez une image</p>
+        </div>""", unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 2 — Où jeter ?
+# ──────────────────────────────────────────────────────────────────────────────
+with tab2:
+    type_dechet = st.selectbox("Type de déchet", list(OU_JETER_TYPES.keys()))
     config = OU_JETER_TYPES[type_dechet]
-    elements, err = search_overpass(lat, lon, config)
-    if err:
-        return f"<p style='color:#e63946'>❌ {err}</p>"
+    st.markdown(f"<div style='background:#1b4332;border-left:4px solid #52b788;border-radius:8px;padding:10px;margin:8px 0'>"
+                f"<span style='color:#95d5b2'>💡 {config['conseil']}</span><br>"
+                f"<span style='color:#52b788;font-size:12px'>{config['eco_org']}</span></div>",
+                unsafe_allow_html=True)
 
-    results = []
-    seen = set()
-    for el in elements:
-        el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
-        el_lon = el.get("lon") or (el.get("center") or {}).get("lon")
-        if not (el_lat and el_lon):
-            continue
-        key = (round(el_lat, 5), round(el_lon, 5))
-        if key in seen:
-            continue
-        seen.add(key)
-        el["_dist"] = haversine_km(lat, lon, el_lat, el_lon)
-        results.append(el)
+    if SEARCHBOX_AVAILABLE:
+        selected = st_searchbox(search_addr, placeholder="Ex: 10 rue de Rivoli, Paris", key="addr_search")
+    else:
+        selected = None
+        raw_addr = st.text_input("Votre adresse", placeholder="Ex: 10 rue de Rivoli, Paris")
 
-    results.sort(key=lambda x: x["_dist"])
-    top = results[:10]
+    if st.button("🔍 Rechercher", type="primary"):
+        lat = lon = label_addr = None
+        if SEARCHBOX_AVAILABLE and isinstance(selected, dict):
+            lat, lon, label_addr = selected["lat"], selected["lon"], selected["label"]
+        elif not SEARCHBOX_AVAILABLE and raw_addr.strip():
+            with st.spinner("📍 Géolocalisation..."):
+                lat, lon, label_addr = geocode(raw_addr)
+        else:
+            st.warning("Sélectionnez ou entrez une adresse.")
 
-    if not top:
-        return f"<p style='color:#f4a261'>😕 Aucun point trouvé dans un rayon de {config['radius']//1000} km.</p>"
+        if lat:
+            st.success(f"📍 **{label_addr}**")
+            with st.spinner("🗺️ Recherche..."):
+                elements, err = search_overpass(lat, lon, config)
+            if err:
+                st.error(err)
+            else:
+                results, seen = [], set()
+                for el in elements:
+                    el_lat = el.get("lat") or (el.get("center") or {}).get("lat")
+                    el_lon = el.get("lon") or (el.get("center") or {}).get("lon")
+                    if not (el_lat and el_lon): continue
+                    key = (round(el_lat,5), round(el_lon,5))
+                    if key in seen: continue
+                    seen.add(key)
+                    el["_lat"],el["_lon"] = el_lat, el_lon
+                    el["_dist"] = haversine(lat,lon,el_lat,el_lon)
+                    results.append(el)
+                results.sort(key=lambda x: x["_dist"])
+                top = results[:10]
 
-    html = f"""
-<div style='background:#1b4332;border-left:4px solid #52b788;border-radius:8px;padding:12px;margin-bottom:12px'>
-    <b style='color:#d8f3dc'>📍 {html_lib.escape(label_addr)}</b> —
-    <span style='color:#52b788'>{len(results)} point(s) trouvé(s) dans {config['radius']//1000} km</span><br>
-    <span style='color:#95d5b2;font-size:13px'>💡 {config['conseil']} | {config['eco_org']}</span>
-</div>"""
+                if not top:
+                    st.warning(f"😕 Aucun point dans {config['radius']//1000} km.")
+                else:
+                    st.success(f"✅ {len(results)} point(s) trouvé(s)")
 
-    for i, el in enumerate(top, 1):
-        tags = el.get("tags", {})
-        name = html_lib.escape(tags.get("name") or tags.get("operator") or "Point de collecte")
-        addr_parts = [tags.get("addr:housenumber",""), tags.get("addr:street",""), tags.get("addr:city","")]
-        addr_str = html_lib.escape(" ".join(p for p in addr_parts if p))
-        html += f"""
-<div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:14px;margin:8px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px'>
-    <div>
-        <b style='color:#d8f3dc'>{i}. {name}</b>
-        {f"<br><span style='color:#95d5b2;font-size:13px'>📍 {addr_str}</span>" if addr_str else ""}
-    </div>
-    <span style='background:#2d6a4f;color:#d8f3dc;padding:4px 14px;border-radius:20px;font-size:13px;white-space:nowrap'>📏 {el['_dist']:.1f} km</span>
-</div>"""
-    return html
+                    if FOLIUM_AVAILABLE:
+                        m = folium.Map(location=[lat,lon], zoom_start=13, tiles="CartoDB positron")
+                        folium.Marker([lat,lon], popup="📍 Vous",
+                                      icon=folium.Icon(color="red",icon="home")).add_to(m)
+                        for el in top:
+                            tags = el.get("tags",{})
+                            name = html_lib.escape(tags.get("name") or tags.get("operator") or "Point de collecte")
+                            folium.Marker([el["_lat"],el["_lon"]],
+                                          popup=folium.Popup(f"<b>{name}</b><br>📏 {el['_dist']:.1f} km", max_width=180),
+                                          icon=folium.Icon(color="green",icon="leaf")).add_to(m)
+                        import streamlit.components.v1 as components
+                        components.html(m._repr_html_(), height=280)
 
-def do_login(email, password):
-    if not DB_READY:
-        return {}, gr.update(value="❌ Secrets Supabase manquants dans les paramètres du Space."), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    user, session, err = auth_login(email, password)
-    if err:
-        return {}, gr.update(value=f"❌ {err}"), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    state = {"id": str(user.id), "email": user.email, "token": session.access_token}
-    return state, gr.update(value=""), gr.update(visible=False), gr.update(visible=True), gr.update(value=navbar_html(user.email)), get_historique(state)
+                    for i,el in enumerate(top[:8],1):
+                        tags = el.get("tags",{})
+                        name = html_lib.escape(tags.get("name") or tags.get("operator") or "Point de collecte")
+                        parts = [tags.get("addr:housenumber",""),tags.get("addr:street",""),tags.get("addr:city","")]
+                        addr_str = html_lib.escape(" ".join(p for p in parts if p))
+                        st.markdown(
+                            f"<div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;"
+                            f"padding:12px;margin:6px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px'>"
+                            f"<div><b style='color:#d8f3dc'>{i}. {name}</b>"
+                            f"{f'<br><span style=\"color:#95d5b2;font-size:12px\">📍 {addr_str}</span>' if addr_str else ''}</div>"
+                            f"<span style='background:#2d6a4f;color:#d8f3dc;padding:3px 10px;border-radius:20px;font-size:12px'>📏 {el['_dist']:.1f} km</span></div>",
+                            unsafe_allow_html=True)
 
-def do_signup(email, password, confirm):
-    if not DB_READY:
-        return {}, gr.update(value="❌ Secrets Supabase manquants dans les paramètres du Space."), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    if password != confirm:
-        return {}, gr.update(value="❌ Les mots de passe ne correspondent pas."), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    if len(password) < 6:
-        return {}, gr.update(value="❌ Mot de passe trop court (6 caractères min)."), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    user, session, err = auth_signup(email, password)
-    if err:
-        return {}, gr.update(value=f"❌ {err}"), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-    if session:
-        state = {"id": str(user.id), "email": user.email, "token": session.access_token}
-        return state, gr.update(value=""), gr.update(visible=False), gr.update(visible=True), gr.update(value=navbar_html(user.email)), get_historique(state)
-    return {}, gr.update(value="✅ Compte créé ! Connectez-vous."), gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-
-def do_logout(user_state):
-    return {}, gr.update(visible=True), gr.update(visible=False), gr.update(value=navbar_html(None)), get_historique({})
-
-def get_historique(user_state):
-    if not user_state or not user_state.get("id"):
-        return "<div style='text-align:center;padding:40px;border:2px dashed #2d6a4f;border-radius:16px;margin:20px 0'><div style='font-size:40px'>🔒</div><p style='color:#95d5b2;margin:8px 0'>Connectez-vous pour voir votre historique persistant.</p></div>"
-    scans = db_get_scans(user_state["id"], user_state["token"])
-    if not scans:
-        return "<div style='text-align:center;padding:40px;border:2px dashed #2d6a4f;border-radius:16px;margin:20px 0'><div style='font-size:40px'>🌿</div><p style='color:#95d5b2;margin:8px 0'>Aucun scan encore. Analysez un déchet !</p></div>"
-
-    conf_moy = sum(s["confidence"] for s in scans) / len(scans)
-    labels_list = [s["label"] for s in scans]
-    plus_frequent = max(set(labels_list), key=labels_list.count)
-
-    html = f"""
-<div style='display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap'>
-    <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:12px;padding:14px;flex:1;min-width:100px;text-align:center'>
-        <div style='color:#95d5b2;font-size:12px'>SCANS TOTAUX</div>
-        <div style='color:#d8f3dc;font-size:22px;font-weight:bold'>{len(scans)}</div>
-    </div>
-    <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:12px;padding:14px;flex:1;min-width:100px;text-align:center'>
-        <div style='color:#95d5b2;font-size:12px'>CONFIANCE MOY.</div>
-        <div style='color:#52b788;font-size:22px;font-weight:bold'>{conf_moy:.1f}%</div>
-    </div>
-    <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:12px;padding:14px;flex:1;min-width:100px;text-align:center'>
-        <div style='color:#95d5b2;font-size:12px'>LE + SCANNÉ</div>
-        <div style='color:#d8f3dc;font-size:18px;font-weight:bold'>{plus_frequent}</div>
-    </div>
-</div>"""
-
-    for s in scans:
-        color = BAC_COLORS.get(s["bac"], "#2d6a4f")
-        conf = s["confidence"]
-        conf_color = "#52b788" if conf >= 80 else "#f4a261" if conf >= 60 else "#e63946"
-        heure = s.get("scanned_at", "")[:16].replace("T", " ")
-        html += f"""
-<div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px;margin:6px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px'>
-    <span style='color:#95d5b2;font-size:13px'>🕐 {heure}</span>
-    <span style='color:#d8f3dc;font-weight:bold'>{s['label']}</span>
-    <span style='background:{color};color:{"#000" if color=="#f5c518" else "white"};padding:3px 10px;border-radius:20px;font-size:13px'>{s['bac']}</span>
-    <span style='color:{conf_color};font-weight:bold'>{conf}%</span>
-</div>"""
-    return html
-
-def clear_historique(user_state):
-    if user_state and user_state.get("id"):
-        db_clear_scans(user_state["id"], user_state["token"])
-    return get_historique(user_state)
-
-def navbar_html(email):
-    if email:
-        short = email.split("@")[0]
-        return f"<div style='text-align:right;padding:8px 0'><span style='color:#95d5b2;font-size:13px'>👤 {short}</span></div>"
-    return ""
-
-# ── CSS ────────────────────────────────────────────────────────────────────────
-CSS = """
-<style>
-/* ── Fond global ── */
-body, .gradio-container, .main, footer, .app {
-    background: linear-gradient(160deg, #0d1f14 0%, #1a2e1e 100%) !important;
-}
-footer { display: none !important; }
-
-/* ── Largeur PC uniquement ── */
-@media (min-width: 768px) {
-    .gradio-container { max-width: 1100px !important; width: 90% !important; margin: 0 auto !important; }
-    .contain { max-width: 1100px !important; }
-}
-
-/* ── Onglets ── */
-[role="tablist"] {
-    background: transparent !important;
-    border-bottom: 2px solid #2d6a4f !important;
-    gap: 2px !important;
-    flex-wrap: nowrap !important;
-    overflow-x: auto !important;
-}
-[role="tab"] {
-    background: transparent !important; color: #95d5b2 !important;
-    font-weight: 600 !important; font-size: 14px !important;
-    border: none !important; border-radius: 8px 8px 0 0 !important;
-    padding: 10px 16px !important; white-space: nowrap !important;
-}
-[role="tab"]:hover { background: #1b4332 !important; color: #d8f3dc !important; }
-[role="tab"][aria-selected="true"] {
-    background: #1b4332 !important; color: #d8f3dc !important;
-    border-bottom: 3px solid #52b788 !important;
-}
-
-/* ── Tous les blocs / conteneurs → fond sombre ── */
-.block, .panel, .tabitem, [data-testid="block"],
-.form, .gap, .gr-group, .group,
-div.svelte-vt1mxs, div.svelte-1f354aw,
-section, article {
-    background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* ── Groupes → fond vert sombre ── */
-.gr-group > div, [data-testid="group"] > div,
-.gradio-group, fieldset {
-    background: #132d1e !important;
-    border: 1px solid #2d6a4f !important;
-    border-radius: 12px !important;
-    padding: 16px !important;
-}
-
-/* ── Textes ── */
-h1, h2, h3, h4 { color: #d8f3dc !important; }
-label, p, span, li, .label-wrap span, .prose { color: #b7e4c7 !important; }
-
-/* ── Boutons ── */
-button.primary, button[class*="primary"] {
-    background: linear-gradient(135deg, #2d6a4f, #52b788) !important;
-    color: white !important; border: none !important;
-    border-radius: 10px !important; font-weight: bold !important;
-}
-button.secondary, button[class*="secondary"] {
-    background: transparent !important;
-    border: 1px solid #52b788 !important;
-    color: #95d5b2 !important; border-radius: 10px !important;
-}
-
-/* ── Inputs ── */
-input, input[type=text], input[type=email], input[type=password], textarea {
-    background: #1b4332 !important; color: #d8f3dc !important;
-    border: 1px solid #2d6a4f !important; border-radius: 10px !important;
-}
-input::placeholder, textarea::placeholder { color: #52b788 !important; }
-
-/* ── Select / Dropdown ── */
-select, .choices, .dropdown-arrow {
-    background: #1b4332 !important; color: #d8f3dc !important;
-    border: 1px solid #2d6a4f !important; border-radius: 10px !important;
-}
-ul[role="listbox"], [role="option"] { background: #1b4332 !important; color: #d8f3dc !important; }
-[role="option"]:hover { background: #2d6a4f !important; }
-
-/* ── Zone image/upload ── */
-.image-frame, .upload-container, [data-testid="image"],
-.image-container, .svelte-p3y7hu {
-    background: #1b4332 !important;
-    border: 2px dashed #52b788 !important;
-    border-radius: 12px !important;
-}
-
-/* ── Séparateur ── */
-hr { border-color: #2d6a4f !important; }
-
-/* ── Markdown ── */
-.prose * { color: #b7e4c7 !important; }
-</style>
-"""
-
-# ── Interface ──────────────────────────────────────────────────────────────────
-with gr.Blocks(title="Waste AI ♻️") as demo:
-
-    user_state = gr.State({})
-
-    # CSS global
-    gr.HTML(CSS)
-
-    # ── Navbar ──────────────────────────────────────────────────────────────────
-    with gr.Row(equal_height=True):
-        with gr.Column(scale=4):
-            gr.HTML("""
-            <div style='display:flex;align-items:center;gap:14px;padding:16px 0 8px 0'>
-                <span style='font-size:48px;line-height:1'>♻️</span>
-                <div>
-                    <div style='color:#d8f3dc;font-size:28px;font-weight:bold;font-family:Georgia,serif;line-height:1.2'>Waste AI</div>
-                    <div style='color:#95d5b2;font-size:13px'>Photographiez un déchet — l'IA vous dit où le jeter.</div>
-                </div>
-            </div>""")
-        with gr.Column(scale=1, min_width=160):
-            navbar_status = gr.HTML("")
-            logout_btn = gr.Button("🚪 Déconnexion", variant="secondary", size="sm", visible=False)
-
-    gr.HTML("<hr style='border-color:#2d6a4f;margin:0 0 8px 0'>")
-
-    # ── Tabs ────────────────────────────────────────────────────────────────────
-    with gr.Tabs():
-
-        # ── Tab 1 : Analyser ─────────────────────────────────────────────────
-        with gr.Tab("🔍 Analyser"):
-            image_input = gr.Image(sources=["webcam", "upload"], type="numpy", label="Photo du déchet")
-            analyse_btn = gr.Button("🌿 Analyser", variant="primary", size="lg")
-            result_html = gr.HTML("<div style='text-align:center;padding:30px;border:2px dashed #2d6a4f;border-radius:16px;margin-top:12px'><div style='font-size:48px'>📸</div><p style='color:#95d5b2;margin:8px 0'>Prenez une photo ou uploadez une image pour commencer.</p></div>")
-            analyse_btn.click(fn=predict, inputs=[image_input, user_state], outputs=result_html)
-
-        # ── Tab 2 : Où jeter ? ───────────────────────────────────────────────
-        with gr.Tab("🗺️ Où jeter ?"):
-            gr.HTML("<p style='color:#95d5b2;margin:0 0 12px 0'>Pour les déchets complexes — sélectionnez le type et entrez votre adresse.</p>")
-            type_dechet = gr.Dropdown(choices=list(OU_JETER_TYPES.keys()), label="Type de déchet", value="🔋 Piles & Batteries")
-            adresse_input = gr.Textbox(placeholder="Ex: 10 rue de Rivoli, Paris", label="Votre adresse")
-            search_btn = gr.Button("🔍 Rechercher les points de collecte", variant="primary")
-            map_result = gr.HTML()
-            search_btn.click(fn=rechercher_points, inputs=[type_dechet, adresse_input], outputs=map_result)
-
-        # ── Tab 3 : Historique ───────────────────────────────────────────────
-        with gr.Tab("📋 Historique") as historique_tab:
-            with gr.Row():
-                refresh_btn = gr.Button("🔄 Rafraîchir", variant="secondary", size="sm")
-                clear_btn   = gr.Button("🗑️ Effacer", variant="secondary", size="sm")
-            historique_html = gr.HTML()
-            refresh_btn.click(fn=get_historique, inputs=[user_state], outputs=historique_html)
-            clear_btn.click(fn=clear_historique, inputs=[user_state], outputs=historique_html)
-            # Rafraîchit quand on sélectionne l'onglet
-            historique_tab.select(fn=get_historique, inputs=[user_state], outputs=historique_html)
-
-        # ── Tab 4 : Compte ───────────────────────────────────────────────────
-        with gr.Tab("👤 Compte"):
-            auth_msg = gr.Markdown("")
-
-            with gr.Group(visible=True) as login_group:
-                gr.HTML("<h3 style='color:#95d5b2;margin:0 0 12px 0'>Se connecter</h3>")
-                login_email = gr.Textbox(label="Email", type="email")
-                login_pw    = gr.Textbox(label="Mot de passe", type="password")
-                login_btn   = gr.Button("Se connecter", variant="primary")
-                gr.HTML("<hr style='border-color:#2d6a4f;margin:16px 0'>")
-                gr.HTML("<h3 style='color:#95d5b2;margin:0 0 12px 0'>Créer un compte</h3>")
-                signup_email = gr.Textbox(label="Email", type="email")
-                signup_pw    = gr.Textbox(label="Mot de passe", type="password")
-                signup_pw2   = gr.Textbox(label="Confirmer le mot de passe", type="password")
-                signup_btn   = gr.Button("Créer mon compte", variant="primary")
-
-            with gr.Group(visible=False) as logged_group:
-                gr.HTML("<p style='color:#52b788'>✅ Vous êtes connecté. Vos scans sont sauvegardés automatiquement.</p>")
-
-            login_btn.click(
-                fn=do_login,
-                inputs=[login_email, login_pw],
-                outputs=[user_state, auth_msg, login_group, logged_group, navbar_status, historique_html]
-            )
-            signup_btn.click(
-                fn=do_signup,
-                inputs=[signup_email, signup_pw, signup_pw2],
-                outputs=[user_state, auth_msg, login_group, logged_group, navbar_status, historique_html]
-            )
-            logout_btn.click(
-                fn=do_logout,
-                inputs=[user_state],
-                outputs=[user_state, login_group, logged_group, navbar_status, historique_html]
-            )
-
-            # Afficher/cacher le bouton déconnexion selon état
-            login_btn.click(fn=lambda s: gr.update(visible=bool(s.get("id"))), inputs=[user_state], outputs=[logout_btn])
-            signup_btn.click(fn=lambda s: gr.update(visible=bool(s.get("id"))), inputs=[user_state], outputs=[logout_btn])
-            logout_btn.click(fn=lambda: gr.update(visible=False), outputs=[logout_btn])
-
-        # ── Tab 5 : Couverture ───────────────────────────────────────────────
-        with gr.Tab("ℹ️ Couverture"):
-            gr.HTML("""
-<div>
-    <h3 style='color:#95d5b2'>Catégories couvertes (6)</h3>
-    <div style='display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px'>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#f5c518'>📦 Carton</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Bac jaune — Aplatissez avant de déposer.</p></div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#2d9e6b'>🍾 Verre</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Colonne à verre — Retirez les couvercles.</p></div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#f5c518'>🥫 Métal</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Bac jaune — Écrasez les canettes.</p></div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#f5c518'>📄 Papier</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Bac jaune — Pas de papier gras.</p></div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#f5c518'>🧴 Plastique</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Bac jaune — Videz et rincez.</p></div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px'><b style='color:#aaa'>🗑️ Résidus</b><p style='color:#95d5b2;font-size:13px;margin:4px 0'>Bac gris — Non recyclable.</p></div>
-    </div>
-    <hr style='border-color:#2d6a4f'>
-    <h3 style='color:#95d5b2'>Limites connues</h3>
-    <ul style='color:#b7e4c7'>
-        <li>Un seul objet par photo</li>
-        <li>Fond neutre recommandé</li>
-        <li>Bonne luminosité nécessaire</li>
-        <li>Score &lt; 60% = résultat peu fiable</li>
-    </ul>
-    <hr style='border-color:#2d6a4f'>
-    <div style='display:flex;gap:12px;flex-wrap:wrap'>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px;flex:1;min-width:120px'>
-            <div style='color:#95d5b2;font-size:12px'>ARCHITECTURE</div>
-            <div style='color:#d8f3dc;font-weight:bold'>EfficientNet-B2</div>
-            <div style='color:#95d5b2;font-size:12px'>Transfer learning ImageNet</div>
-        </div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px;flex:1;min-width:120px'>
-            <div style='color:#95d5b2;font-size:12px'>DATASETS</div>
-            <div style='color:#d8f3dc;font-weight:bold'>TrashNet + TACO</div>
-            <div style='color:#95d5b2;font-size:12px'>~2500 images annotées</div>
-        </div>
-        <div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;padding:12px;flex:1;min-width:120px'>
-            <div style='color:#95d5b2;font-size:12px'>RÉFÉRENTIEL</div>
-            <div style='color:#d8f3dc;font-weight:bold'>ADEME / Citeo</div>
-            <div style='color:#95d5b2;font-size:12px'>Consignes de tri France</div>
-        </div>
-    </div>
-    <p style='text-align:center;color:#52b788;font-size:12px;margin-top:20px'>Projet scolaire • Semestre 2026 • EfficientNet-B2 • TrashNet & TACO</p>
-</div>""")
-
-demo.launch()
+# ──────────────────────────────────────────────────────────────────────────────
+# TAB 3 — Historique
+# ──────────────────────────────────────────────────────────────────────────────
+with tab3:
+    if not st.session_state.user:
+        st.markdown("""
+        <div style='text-align:center;padding:32px;border:2px dashed #2d6a4f;border-radius:16px'>
+            <div style='font-size:36px'>🔒</div>
+            <p style='color:#95d5b2'>Connectez-vous pour voir votre historique.</p>
+        </div>""", unsafe_allow_html=True)
+    else:
+        scans = db_get(st.session_state.user["id"], st.session_state.token)
+        if not scans:
+            st.markdown("""
+            <div style='text-align:center;padding:32px;border:2px dashed #2d6a4f;border-radius:16px'>
+                <div style='font-size:36px'>🌿</div>
+                <p style='color:#95d5b2'>Aucun scan encore.</p>
+            </div>""", unsafe_allow_html=True)
+        else:
+            conf_moy = sum(s["confidence"] for s in scans) / len(scans)
+            labels   = [s["label"] for s in scans]
+            top_label = max(set(labels), key=labels.count)
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Scans",len(scans))
+            c2.metric("Conf. moy.",f"{conf_moy:.1f}%")
+            c3.metric("+ fréquent",top_label)
+            st.divider()
+            for s in scans:
+                color = BAC_COLORS.get(s["bac"],"#2d6a4f")
+                conf  = s["confidence"]
+                cc    = "#52b788" if conf>=80 else "#f4a261" if conf>=60 else "#e63946"
+                heure = s.get("scanned_at","")[:16].replace("T"," ")
+                st.markdown(
+                    f"<div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;"
+                    f"padding:10px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px'>"
+                    f"<span style='color:#95d5b2;font-size:12px'>🕐 {heure}</span>"
+                    f"<span style='color:#d8f3dc;font-weight:bold'>{s['label']}</span>"
+                    f"<span style='background:{color};color:{'#000' if color=='#f5c518' else 'white'};padding:2px 8px;border-radius:20px;font-size:12px'>{s['bac']}</span>"
+                    f"<span style='color:{cc};font-weight:bold'>{conf}%</span></div>",
+                    unsafe_allow_html=True)
+            st.divider()
+            if st.button("🗑️ Effacer mon historique", type="secondary"):
+                db_clear(st.session_state.user["id"], st.session_state.token)
+                st.rerun()
