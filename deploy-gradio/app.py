@@ -216,6 +216,7 @@ def search_overpass(lat,lon,config):
 
 # ── Session state ──────────────────────────────────────────────────────────────
 for k,v in [("user",None),("token",None),("last_img_id",None),
+             ("historique",[]),
              ("geo_requested",False),("geo_counter",0),
              ("geo_coords",None),("geo_label_cache",None)]:
     if k not in st.session_state:
@@ -280,7 +281,7 @@ with tab1:
     if image_data:
         img_id = getattr(image_data, "file_id", id(image_data))
         image  = Image.open(image_data)
-        st.image(image, use_container_width=True)
+        st.image(image, use_column_width=True)
 
         with st.spinner("🌿 Analyse..."):
             model = load_model()
@@ -319,10 +320,18 @@ with tab1:
                     # Sauvegarde unique
                     if st.session_state.last_img_id != img_id:
                         st.session_state.last_img_id = img_id
+                        st.session_state.historique.append({
+                            "heure": datetime.now().strftime("%H:%M:%S"),
+                            "label": cat["label"],
+                            "bac": cat["bac"],
+                            "confidence": conf,
+                        })
                         if st.session_state.user and st.session_state.token:
                             db_save(st.session_state.user["id"], st.session_state.token,
                                     cat["label"], cat["bac"], conf)
-                            st.success("✅ Scan sauvegardé.")
+                            st.success("✅ Scan sauvegardé dans votre historique.")
+                        else:
+                            st.caption("💡 Connectez-vous pour sauvegarder définitivement.")
 
                 except (UnidentifiedImageError, Exception) as e:
                     st.error(f"❌ Image invalide : {e}")
@@ -452,13 +461,9 @@ with tab2:
 # TAB 3 — Historique
 # ──────────────────────────────────────────────────────────────────────────────
 with tab3:
-    if not st.session_state.user:
-        st.markdown("""
-        <div style='text-align:center;padding:32px;border:2px dashed #2d6a4f;border-radius:16px'>
-            <div style='font-size:36px'>🔒</div>
-            <p style='color:#95d5b2'>Connectez-vous pour voir votre historique.</p>
-        </div>""", unsafe_allow_html=True)
-    else:
+    if st.session_state.user:
+        # Connecté : historique complet depuis Supabase
+        st.caption("Historique complet de votre compte — toutes les sessions.")
         scans = db_get(st.session_state.user["id"], st.session_state.token)
         if not scans:
             st.markdown("""
@@ -471,12 +476,12 @@ with tab3:
             labels   = [s["label"] for s in scans]
             top_label = max(set(labels), key=labels.count)
             c1,c2,c3 = st.columns(3)
-            c1.metric("Scans",len(scans))
-            c2.metric("Conf. moy.",f"{conf_moy:.1f}%")
-            c3.metric("+ fréquent",top_label)
+            c1.metric("Scans", len(scans))
+            c2.metric("Conf. moy.", f"{conf_moy:.1f}%")
+            c3.metric("+ fréquent", top_label)
             st.divider()
             for s in scans:
-                color = BAC_COLORS.get(s["bac"],"#2d6a4f")
+                color = BAC_COLORS.get(s["bac"], "#2d6a4f")
                 conf  = s["confidence"]
                 cc    = "#52b788" if conf>=80 else "#f4a261" if conf>=60 else "#e63946"
                 heure = s.get("scanned_at","")[:16].replace("T"," ")
@@ -491,4 +496,39 @@ with tab3:
             st.divider()
             if st.button("🗑️ Effacer mon historique", type="secondary"):
                 db_clear(st.session_state.user["id"], st.session_state.token)
+                st.rerun()
+    else:
+        # Non connecté : historique local de la session
+        st.caption("Session en cours uniquement — connectez-vous pour sauvegarder définitivement.")
+        if not st.session_state.historique:
+            st.markdown("""
+            <div style='text-align:center;padding:32px;border:2px dashed #2d6a4f;border-radius:16px'>
+                <div style='font-size:36px'>📸</div>
+                <p style='color:#95d5b2'>Aucun scan dans cette session.</p>
+            </div>""", unsafe_allow_html=True)
+        else:
+            scans_loc = st.session_state.historique
+            conf_moy  = sum(s["confidence"] for s in scans_loc) / len(scans_loc)
+            labels    = [s["label"] for s in scans_loc]
+            top_label = max(set(labels), key=labels.count)
+            c1,c2,c3 = st.columns(3)
+            c1.metric("Scans", len(scans_loc))
+            c2.metric("Conf. moy.", f"{conf_moy:.1f}%")
+            c3.metric("+ fréquent", top_label)
+            st.divider()
+            for s in reversed(scans_loc):
+                color = BAC_COLORS.get(s["bac"], "#2d6a4f")
+                conf  = s["confidence"]
+                cc    = "#52b788" if conf>=80 else "#f4a261" if conf>=60 else "#e63946"
+                st.markdown(
+                    f"<div style='background:#1b4332;border:1px solid #2d6a4f;border-radius:10px;"
+                    f"padding:10px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px'>"
+                    f"<span style='color:#95d5b2;font-size:12px'>🕐 {s['heure']}</span>"
+                    f"<span style='color:#d8f3dc;font-weight:bold'>{s['label']}</span>"
+                    f"<span style='background:{color};color:{'#000' if color=='#f5c518' else 'white'};padding:2px 8px;border-radius:20px;font-size:12px'>{s['bac']}</span>"
+                    f"<span style='color:{cc};font-weight:bold'>{conf}%</span></div>",
+                    unsafe_allow_html=True)
+            st.divider()
+            if st.button("🗑️ Effacer l'historique", type="secondary"):
+                st.session_state.historique = []
                 st.rerun()
